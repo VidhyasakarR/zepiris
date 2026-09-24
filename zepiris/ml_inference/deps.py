@@ -5,6 +5,7 @@ from typing import Annotated, TypeVar
 from fastapi import Depends, HTTPException, Request
 
 from zepiris.ml_inference.blur_detection import BlurDetectionService
+from zepiris.ml_inference.dresscode_detection import DresscodeDetectionService
 from zepiris.ml_inference.face_embedding import FaceEmbeddingService
 from zepiris.ml_inference.image_quality_assessment import (
     ImageQualityAssessmentService,
@@ -54,6 +55,17 @@ def _face_embedding(request: Request) -> FaceEmbeddingService:
     )
 
 
+def _dresscode(request: Request) -> DresscodeDetectionService:
+    return _require(
+        "dresscode",
+        request.app.state.dresscode_service,
+        hint=(
+            "Dress-code detection needs the face detector to anchor the torso "
+            "region; it is unavailable whenever face embedding failed to load."
+        ),
+    )
+
+
 def _iqa(request: Request) -> ImageQualityAssessmentService:
     svc: ImageQualityAssessmentService | None = request.app.state.iqa_service
     if svc is None:
@@ -72,3 +84,4 @@ SpoofDep = Annotated[SpoofDetectionService, Depends(_spoof)]
 BlurDep = Annotated[BlurDetectionService, Depends(_blur)]
 FaceEmbeddingDep = Annotated[FaceEmbeddingService, Depends(_face_embedding)]
 IQADep = Annotated[ImageQualityAssessmentService, Depends(_iqa)]
+DresscodeDep = Annotated[DresscodeDetectionService, Depends(_dresscode)]

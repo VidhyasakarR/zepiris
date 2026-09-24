@@ -71,10 +71,14 @@ class SpoofDetectionResult(BaseModel):
     Attributes:
         is_live: True if image is genuine/live, False if spoofed
         probability: Probability of image being live in [0, 1] range
+        reason: None when the model scored the face, else why it could not:
+            "face_too_small" — the face is below the size MiniFASNet can judge,
+            so ``is_live`` is False without a model verdict (ask for a retake).
     """
 
     is_live: bool
     probability: float = Field(ge=0.0, le=1.0)
+    reason: str | None = None
 
 
 class NSFWDetectionResult(BaseModel):
@@ -108,13 +112,54 @@ class ImageQualityAssessmentResult(BaseModel):
     and blur detection. Returns aggregated result.
 
     Attributes:
-        passed: True if all quality checks pass, False if any check fails
+        passed: True if every check that ran passed, False if any of them failed
         nsfw: NSFW detection result
         spoof: Spoof detection result
-        blur: Blur detection result
+        blur: Blur detection result, or None when the blur model is unavailable.
+            Blur is the one optional check: the service keeps serving NSFW and
+            spoof rather than failing the whole assessment, and ``passed`` is
+            then decided without it.
     """
 
     passed: bool
     nsfw: NSFWDetectionResult
     spoof: SpoofDetectionResult
-    blur: BlurDetectionResult
+    blur: BlurDetectionResult | None = None
+
+
+class DresscodeCheckResult(BaseModel):
+    """Result of the ML service's uniform (dress-code) check on one image.
+
+    Carries the raw signals only — the decision threshold is applied by the API
+    layer, so a per-request threshold never needs a second inference call.
+
+    Attributes:
+        face_detected: Whether a face anchored the torso region
+        region: "torso" (face-anchored) or "fallback_full_image" (no face found).
+            Fallback results are materially weaker — with no anchor a blue
+            background lands inside the region — so callers can discount them.
+        blue_coverage: Fraction of the region inside the Loadshare-blue HSV band
+        logo_match: Best normalized logo template correlation in [0, 1], or None
+            when the term could not be evaluated (chest band too small, or no
+            template available). None means "not measured", never "not found".
+        score: Decision score in [0, 1]. With the learned classifier it is the
+            uniform probability; otherwise the colour/logo fusion (blue is
+            renormalized when logo_match is None).
+        uniform_score: Learned classifier's uniform probability, or None when
+            the classifier is not loaded.
+        engine: "siglip2" (learned classifier decides) or "hsv" (colour/logo rule).
+        recommended_threshold: The threshold the classifier was calibrated at,
+            or None for the colour/logo rule.
+        reason: None on a normal scored result, else "roi_too_small" or
+            "no_blue_region" (colour/logo rule only).
+    """
+
+    face_detected: bool
+    region: str
+    blue_coverage: float = Field(ge=0.0, le=1.0)
+    logo_match: float | None = Field(None, ge=0.0, le=1.0)
+    score: float = Field(ge=0.0, le=1.0)
+    uniform_score: float | None = Field(None, ge=0.0, le=1.0)
+    engine: str = "hsv"
+    recommended_threshold: float | None = None
+    reason: str | None = None

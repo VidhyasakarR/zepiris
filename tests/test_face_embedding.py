@@ -213,3 +213,30 @@ def test_border_spill_falls_through_to_padding(monkeypatch) -> None:
     # The off-frame original detection was rejected, so recognition runs on the
     # padded image where the real face was recovered.
     assert result["image"].shape[:2] != img.shape[:2]
+
+
+def test_detect_box_padding_retry_maps_box_onto_original(monkeypatch, image) -> None:
+    """A frame-filling close-up must get a box from detect_box too, not only from preprocess.
+
+    Liveness and dress code crop from this box; before the padded retry they got
+    "no face" on close-ups that matched fine. The fake detector finds the face at
+    the centre half of the padded frame (100px + 25px border each side = 150px):
+    x in [37.5, 112.5] padded -> [12.5, 87.5] original -> [0.125, 0.875] normalized.
+    """
+    service, det = _service_with_fake(
+        monkeypatch, image, enable_padding_retry=True, padding_fraction=0.25,
+        low_det_thresh=0.5, enable_upscale_retry=False,
+    )
+
+    result = service.detect_box(image)
+
+    assert result.face_detected is True
+    assert det.calls == [(100, 100), (150, 150)]
+    assert result.bbox == pytest.approx([0.125, 0.125, 0.875, 0.875], abs=0.01)
+
+
+def test_detect_box_without_padding_retry_reports_no_face(monkeypatch, image) -> None:
+    service, _ = _service_with_fake(
+        monkeypatch, image, enable_padding_retry=False, low_det_thresh=0.5, enable_upscale_retry=False,
+    )
+    assert service.detect_box(image).face_detected is False

@@ -26,3 +26,10 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+
+# Runtime data (adaptive-learning state: scores + labels, no images)
+learning/
+
+# SigLIP2 encoder for the dress-code classifier (372 MB): regenerate with
+# python scripts/export_dresscode_model.py
+models/siglip2_base_vision.onnx

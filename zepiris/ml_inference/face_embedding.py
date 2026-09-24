@@ -606,12 +606,15 @@ class FaceEmbeddingService(ModelService):
         Detection only (no recognition), so it is cheap enough to poll. Used by
         the UI readiness ring and by document face extraction.
 
-        Falls back to a lower confidence threshold and then an upscaled copy
-        when the primary pass finds nothing — small printed document faces need
-        both. Uniform upscaling preserves normalized coordinates, so the
-        returned box always maps directly onto the original frame. The reflect
-        padding retry used by :meth:`preprocess` is deliberately NOT used here:
-        padding shifts coordinates and the box would no longer line up.
+        Falls back to a lower confidence threshold, then a reflect-padded copy,
+        then an upscaled copy when the earlier passes find nothing. The padded
+        retry is what recovers frame-filling close-ups (face cut off at the
+        forehead/chin): the detector needs margin around a face, and without it
+        such selfies matched fine — :meth:`preprocess` pads — while this method
+        reported no face, leaving liveness and dress code to score the whole
+        frame. Padded coordinates are shifted back and rescaled onto the
+        original frame; upscaling is uniform, so its normalized box needs no
+        correction.
 
         Args:
             image_rgb: Input image in RGB format, shape (H, W, 3), dtype uint8
@@ -621,9 +624,16 @@ class FaceEmbeddingService(ModelService):
         """
         image_rgb = self._cap_input(image_rgb)
         detected = image_rgb
+        offset = 0  # border added by the padded retry, in pixels per side
         face = self._select_face(image_rgb)
         if face is None and self._low_det_thresh < self._det_thresh:
             face = self._select_face(image_rgb, det_thresh=self._low_det_thresh)
+        if face is None and self._enable_padding_retry:
+            padded = self._pad_image(image_rgb)
+            if padded is not image_rgb:
+                face = self._select_face(padded, det_thresh=self._low_det_thresh)
+                if face is not None:
+                    offset = (padded.shape[0] - image_rgb.shape[0]) // 2
         if face is None and self._enable_upscale_retry:
             upscaled = self._upscale_image(image_rgb)
             if upscaled is not image_rgb:
@@ -633,7 +643,7 @@ class FaceEmbeddingService(ModelService):
             return FaceDetectionResult(face_detected=False, bbox=[0.0, 0.0, 0.0, 0.0])
 
         h, w = detected.shape[:2]
-        x1, y1, x2, y2 = (float(v) for v in face.bbox[:4])
+        x1, y1, x2, y2 = (float(v) - offset for v in face.bbox[:4])
         bbox = [
             max(0.0, min(1.0, x1 / w)),
             max(0.0, min(1.0, y1 / h)),

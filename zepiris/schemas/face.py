@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from zepiris.schemas.ml_inference import ImageQualityAssessmentResult
+from zepiris.schemas.ml_inference import ImageQualityAssessmentResult, SpoofDetectionResult
 
 MAX_IMAGE_SIZE_MB = 5
 MAX_IMAGE_SIZE_BYTES = MAX_IMAGE_SIZE_MB * 1024 * 1024
@@ -99,5 +99,8 @@ class VerifyResponse(BaseModel):
     document_face: dict | None = Field(None, alias="documentFace")
     face_detected: bool = Field(..., alias="faceDetected")
     iqa_passed: bool = Field(..., alias="iqaPassed")
+    #: facematch with ZEPIRIS_LIVENESS_ENABLED only — the liveness gate's result
+    #: (null when the gate is off).
+    liveness: SpoofDetectionResult | None = None
 
     model_config = {"populate_by_name": True}

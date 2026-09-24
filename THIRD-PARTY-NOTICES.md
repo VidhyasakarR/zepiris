@@ -9,6 +9,41 @@ ZepIris itself is licensed under the MIT License.
 
 --------------------------------------------------------------------------------
 
+Bundled model weights
+----------------------
+
+SigLIP2 image encoder (dress-code / uniform classifier)
+  File: models/siglip2_base_vision.onnx (not committed; built by
+        scripts/export_dresscode_model.py from google/siglip2-base-patch16-224)
+  Only the vision tower is exported; a linear head trained on Loadshare rider
+  photos (zepiris/ml_inference/assets/dresscode_head.json) sits on top.
+  License: Apache-2.0
+  URL: https://huggingface.co/google/siglip2-base-patch16-224
+
+--------------------------------------------------------------------------------
+
+MediaPipe Pose Landmarker (browser only, capture guide in /ui)
+  Loaded at runtime from cdn.jsdelivr.net (@mediapipe/tasks-vision) and
+  storage.googleapis.com (pose_landmarker_lite.task); not bundled.
+  License: Apache-2.0
+  URL: https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker
+
+--------------------------------------------------------------------------------
+
+MiniFASNet Anti-Spoofing (ONNX) — two-model ensemble
+  Files: models/minifasnet_v2_yakhyo.onnx, models/minifasnet_v1se_yakhyo.onnx
+  Source: github.com/yakhyo/face-anti-spoofing (release assets)
+  ONNX exports of minivision-ai/Silent-Face-Anti-Spoofing (MiniFASNetV2 + V1SE).
+  License: Apache-2.0
+  URL: https://github.com/minivision-ai/Silent-Face-Anti-Spoofing
+  NOTE: these exports take RAW [0,255] input (the /255 scaling is in-graph) and
+  use class index 1 = real; the two models are ensembled (averaged prob_live)
+  with per-model crop scales (V2 2.7x, V1SE 4.0x). See onnx_spoof_detection.py.
+  Also bundled: models/minifasnet_v2_spoof.onnx (garciafido HF export, used by
+  tests as a single-model preprocessing guard).
+
+--------------------------------------------------------------------------------
+
 FastAPI
   Version range: >=0.127.0,<0.200.0
   License: MIT

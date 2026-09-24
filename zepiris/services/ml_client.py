@@ -21,6 +21,7 @@ Example:
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 
 import httpx
@@ -28,6 +29,7 @@ import httpx
 from zepiris.framing import encode_pair_frame
 from zepiris.schemas.ml_inference import (
     BlurDetectionResult,
+    DresscodeCheckResult,
     FaceDetectionResult,
     FaceEmbeddingResult,
     FaceMatchResult,
@@ -254,6 +256,34 @@ class AsyncMLInferenceClient:
         )
         response.raise_for_status()
         return FaceMatchResult(**response.json())
+
+    async def check_liveness(self, image: bytes) -> SpoofDetectionResult:
+        """Run the liveness (anti-spoof) gate on one raw image.
+
+        Raw bytes, like ``match_faces``: this sits on the facematch hot path, so
+        the probe crosses the wire exactly as it arrived.
+        """
+        response = await self.client.post(
+            "/v1/liveness/check",
+            content=image,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        response.raise_for_status()
+        return SpoofDetectionResult(**response.json())
+
+    async def check_dresscode(self, image: bytes) -> DresscodeCheckResult:
+        """Score one image for the blue Loadshare uniform shirt.
+
+        Sends base64 rather than the binary frame used by ``match_faces``: this
+        is a single image on a low-rate endpoint, so the ~33% encoding overhead
+        costs less than a second wire format to maintain.
+        """
+        response = await self.client.post(
+            "/v1/dresscode/check",
+            json={"image_b64": base64.b64encode(image).decode("ascii")},
+        )
+        response.raise_for_status()
+        return DresscodeCheckResult(**response.json())
 
     async def healthz(self) -> dict[str, str]:
         """Check service health."""

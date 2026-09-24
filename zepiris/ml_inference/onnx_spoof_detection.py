@@ -57,6 +57,10 @@ class OnnxSpoofDetectionService:
         live_threshold: averaged prob_live must exceed this to be considered live.
         screen_replay_detector: Optional passive moiré/glare gate; when it flags
             a screen the result is forced not-live regardless of the models.
+        min_face_px: Shorter side of the detected face, in input pixels, below
+            which the models are not run. The 80x80 input holds a 2.7x crop, so
+            the face itself is ~30 px there; a face smaller than that in the
+            source is upscaled into blur and the verdict is noise. 0 disables.
     """
 
     def __init__(
@@ -65,6 +69,7 @@ class OnnxSpoofDetectionService:
         face_detector: FaceDetector,
         live_threshold: float = 0.5,
         screen_replay_detector: ScreenReplayDetector | None = None,
+        min_face_px: int = 0,
     ) -> None:
         if not models:
             raise ValueError("at least one ONNX model is required")
@@ -75,6 +80,7 @@ class OnnxSpoofDetectionService:
         self._face_detector = face_detector
         self._live_threshold = live_threshold
         self._screen = screen_replay_detector
+        self._min_face_px = int(min_face_px)
 
     def load_model(self) -> None:
         """No-op; the ONNX sessions load in __init__. Kept for API symmetry."""
@@ -90,8 +96,13 @@ class OnnxSpoofDetectionService:
             SpoofDetectionResult: ``is_live`` reflects ensemble + screen gate;
                 ``probability`` is the averaged live probability.
         """
+        bbox_px, face_found = self._face_box_px(image_rgb)
+        if face_found and self._min_face_px > 0:
+            x1, y1, x2, y2 = bbox_px
+            if min(x2 - x1, y2 - y1) < self._min_face_px:
+                return SpoofDetectionResult(is_live=False, probability=0.0, reason="face_too_small")
+
         image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
-        bbox_px = self._face_box_px(image_rgb)
 
         probs = [
             self._infer_prob_live(session, input_name, self._scaled_crop(image_bgr, bbox_px, scale))
@@ -107,19 +118,21 @@ class OnnxSpoofDetectionService:
 
     # -- internals ----------------------------------------------------------
 
-    def _face_box_px(self, image_rgb: np.ndarray) -> tuple[int, int, int, int]:
-        """Return the primary face box in pixels, or the full frame if none."""
+    def _face_box_px(
+        self, image_rgb: np.ndarray
+    ) -> tuple[tuple[int, int, int, int], bool]:
+        """Return the primary face box in pixels (full frame if none) and whether a face was found."""
         h, w = image_rgb.shape[:2]
         result = self._face_detector(image_rgb)
         if not result.face_detected:
-            return 0, 0, w, h
+            return (0, 0, w, h), False
         x1, y1, x2, y2 = result.bbox  # normalized [0, 1]
         return (
             int(round(x1 * w)),
             int(round(y1 * h)),
             int(round(x2 * w)),
             int(round(y2 * h)),
-        )
+        ), True
 
     @staticmethod
     def _scaled_crop(

@@ -7,6 +7,7 @@ from zepiris.services.embedding import FaceEmbeddingProvider
 from zepiris.services.iqa import MLInferenceIQAService
 from zepiris.services.learning import AdaptiveThresholdLearner
 from zepiris.services.matching import FaceMatcher
+from zepiris.services.ml_client import AsyncMLInferenceClient
 from zepiris.services.s3_fetcher import S3ImageFetcher
 
 
@@ -30,6 +31,10 @@ def s3_fetcher_dep(request: Request) -> S3ImageFetcher:
     return request.app.state.s3_fetcher
 
 
+def ml_async_dep(request: Request) -> AsyncMLInferenceClient:
+    return request.app.state.ml_async
+
+
 def learner_dep(request: Request) -> AdaptiveThresholdLearner:
     return request.app.state.learner
 
@@ -40,3 +45,4 @@ EmbeddingDep = Annotated[FaceEmbeddingProvider, Depends(embedding_dep)]
 MatcherDep = Annotated[FaceMatcher, Depends(matcher_dep)]
 S3FetcherDep = Annotated[S3ImageFetcher, Depends(s3_fetcher_dep)]
 LearnerDep = Annotated[AdaptiveThresholdLearner, Depends(learner_dep)]
+MLAsyncDep = Annotated[AsyncMLInferenceClient, Depends(ml_async_dep)]

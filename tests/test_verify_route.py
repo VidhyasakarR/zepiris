@@ -42,6 +42,7 @@ class _Settings:
     verify_threshold = 0.5
     doc_verify_threshold = 0.4
     doc_min_sharpness = 0.0
+    liveness_enabled = False
 
 
 class _IQA:
@@ -112,11 +113,16 @@ class _Learner:
         return {"recorded": True, "matched_sample": False, "doc_type": None, "thresholds": {}}
 
 
-def _client(iqa, embedding, fetcher, learner=None) -> TestClient:
+def _client(iqa, embedding, fetcher, learner=None, *, liveness=None) -> TestClient:
+    """``liveness`` (a ``_Liveness`` stub) turns the facematch liveness gate on."""
     app = FastAPI()
     register_exception_handlers(app)
     app.include_router(face_routes.router, prefix="/v1/faces")
-    app.dependency_overrides[SettingsDep.__metadata__[0].dependency] = lambda: _Settings()
+    settings = _Settings()
+    if liveness is not None:
+        settings.liveness_enabled = True
+        app.state.ml_async = liveness
+    app.dependency_overrides[SettingsDep.__metadata__[0].dependency] = lambda: settings
     app.dependency_overrides[IQADep.__metadata__[0].dependency] = lambda: iqa
     app.dependency_overrides[EmbeddingDep.__metadata__[0].dependency] = lambda: embedding
     # The routes score through a matcher; LocalFaceMatcher is the in-process one,
@@ -524,3 +530,62 @@ def test_no_face_in_live_photo() -> None:
     body = _post(client).json()
     assert body["faceDetected"] is False
     assert body["verificationResult"]["isMatch"] is False
+
+
+class _Liveness:
+    """Stub ML client exposing only the liveness call the gate makes."""
+
+    def __init__(self, *, live=True, probability=0.93, status: int | None = None) -> None:
+        self._live, self._probability, self._status = live, probability, status
+        self.calls = 0
+
+    async def check_liveness(self, image: bytes) -> SpoofDetectionResult:
+        import httpx
+
+        self.calls += 1
+        if self._status is not None:
+            req = httpx.Request("POST", "http://ml/v1/liveness/check")
+            raise httpx.HTTPStatusError(
+                "boom", request=req, response=httpx.Response(self._status, request=req)
+            )
+        return SpoofDetectionResult(is_live=self._live, probability=self._probability)
+
+
+def test_liveness_gate_passes_live_probe() -> None:
+    vec = [1.0, 0.0, 0.0]
+    gate = _Liveness(live=True, probability=0.93)
+    client = _client(_IQA(), _Embedding(live_vec=vec, ref_vec=vec), _Fetcher(_jpeg_bytes()), liveness=gate)
+    body = _post(client).json()
+    assert gate.calls == 1
+    assert body["verificationResult"]["isMatch"] is True
+    assert body["liveness"]["is_live"] is True
+    assert body["scores"]["livenessScore"] == 0.93
+    assert "livenessFailed" not in body
+
+
+def test_liveness_gate_rejects_spoof_but_reports_score() -> None:
+    vec = [1.0, 0.0, 0.0]
+    gate = _Liveness(live=False, probability=0.12)
+    client = _client(_IQA(), _Embedding(live_vec=vec, ref_vec=vec), _Fetcher(_jpeg_bytes()), liveness=gate)
+    body = _post(client).json()
+    assert body["livenessFailed"] is True
+    assert body["iqaPassed"] is False
+    assert body["verificationResult"]["isMatch"] is False    # identical faces, still rejected
+    assert body["verificationResult"]["score"] is not None   # score still reported
+    assert body["scores"]["livenessScore"] == 0.12
+
+
+def test_liveness_gate_fails_closed_when_model_unavailable() -> None:
+    vec = [1.0, 0.0, 0.0]
+    gate = _Liveness(status=503)
+    client = _client(_IQA(), _Embedding(live_vec=vec, ref_vec=vec), _Fetcher(_jpeg_bytes()), liveness=gate)
+    assert _post(client).status_code == 503
+
+
+def test_docmatch_never_calls_liveness_gate() -> None:
+    vec = [1.0, 0.0, 0.0]
+    gate = _Liveness(live=False)
+    client = _client(_IQA(), _Embedding(live_vec=vec, ref_vec=vec), _Fetcher(_jpeg_bytes()), liveness=gate)
+    body = _post(client, path="/v1/faces/docmatch/verify").json()
+    assert gate.calls == 0
+    assert body["verificationResult"]["isMatch"] is True

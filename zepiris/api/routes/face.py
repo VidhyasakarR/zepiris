@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
 import uuid
+from collections.abc import Awaitable, Callable
 
 import cv2
+import httpx
 import numpy as np
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, File, Form, Request, UploadFile
 
+from zepiris.api.image_source import (
+    decode_b64_image,
+    decode_b64_sync,
+    resolve_image_source,
+    validate_image_bytes,
+)
 from zepiris.deps import (
     EmbeddingDep,
     LearnerDep,
@@ -18,15 +24,12 @@ from zepiris.deps import (
 )
 from zepiris.exceptions import (
     DocumentTooBlurryError,
-    EmptyUploadError,
     FeedbackValidationError,
-    ImageSourceError,
-    ImageTooLargeError,
+    MLInferenceTimeoutError,
+    MLInferenceTransportError,
     ReferenceFaceNotFoundError,
 )
 from zepiris.schemas.face import (
-    MAX_IMAGE_SIZE_BYTES,
-    MAX_IMAGE_SIZE_MB,
     DocMatchRequest,
     FaceMatchRequest,
     VerificationResult,
@@ -34,7 +37,8 @@ from zepiris.schemas.face import (
     VerifyResponse,
 )
 from zepiris.services.learning import FACE_KIND, GENERIC_DOC_TYPE
-from zepiris.services.matching import ProbeImageDecodeError
+from zepiris.schemas.ml_inference import SpoofDetectionResult
+from zepiris.services.matching import ProbeImageDecodeError, RemoteFaceMatcher
 
 router = APIRouter()
 
@@ -56,18 +60,31 @@ def _resolve_threshold(
     return default, "default"
 
 
-def _scores_dict(match_score: float | None, threshold: float, ml_struct) -> dict:
+def _scores_dict(
+    match_score: float | None,
+    threshold: float,
+    ml_struct,
+    liveness: SpoofDetectionResult | None = None,
+) -> dict:
     """Flat numeric summary gathered from the match score + the IQA result.
 
     Quality scores are ``None`` when the liveness/IQA gate did not run
-    (``ml_struct is None``, e.g. docmatch).
+    (``ml_struct is None``, e.g. docmatch). ``blurScore`` is also ``None`` on its
+    own when the gate ran without the blur model — the rest of the block is
+    still filled in. ``liveness`` is the standalone liveness gate's result; it
+    fills ``livenessScore`` when the full IQA did not run.
     """
+    blur = ml_struct.blur if ml_struct else None
+    if ml_struct:
+        liveness_score = ml_struct.spoof.probability
+    else:
+        liveness_score = liveness.probability if liveness is not None else None
     return {
         "matchScore": match_score,
         "threshold": threshold,
         "margin": (match_score - threshold) if match_score is not None else None,
-        "livenessScore": ml_struct.spoof.probability if ml_struct else None,
-        "blurScore": ml_struct.blur.probability if ml_struct else None,
+        "livenessScore": liveness_score,
+        "blurScore": blur.probability if blur is not None else None,
         "nsfwSafeScore": ml_struct.nsfw.probability if ml_struct else None,
     }
 
@@ -106,75 +123,30 @@ async def _record_outcome(learner, *, request_id: str, doc_type: str, body: dict
     )
 
 
-def _validate_image_bytes(raw: bytes) -> None:
-    if not raw:
-        raise EmptyUploadError()
-    if len(raw) > MAX_IMAGE_SIZE_BYTES:
-        mb = len(raw) / (1024 * 1024)
-        raise ImageTooLargeError(mb=mb, max_mb=MAX_IMAGE_SIZE_MB)
+# Image-source handling (base64 / S3, size limits, error mapping) is shared
+# with the dresscode route; the implementation lives in
+# zepiris.api.image_source. Aliased here so call sites below read unchanged.
+_validate_image_bytes = validate_image_bytes
+_decode_b64_sync = decode_b64_sync
+_decode_b64_image = decode_b64_image
+_resolve_image_source = resolve_image_source
 
 
-#: Above this payload size, base64 decoding moves to a worker thread. Decoding a
-#: few hundred KB takes single-digit milliseconds, which is nothing once — and a
-#: hard throughput ceiling when 100 requests do it on the event loop at the same
-#: time, since none of them can make progress while one decodes. Below the
-#: threshold the thread hop costs more than the decode it avoids.
-_B64_OFFLOAD_THRESHOLD_BYTES = 64 * 1024
+async def _check_liveness(ml, raw: bytes) -> SpoofDetectionResult:
+    """Call the ML liveness gate, mapping failures exactly as the matcher does.
 
-
-def _decode_b64_sync(value: str, *, field: str) -> bytes:
-    payload = value.strip()
-    if payload.startswith("data:"):
-        # Strip the "data:<mime>;base64," prefix, keep the payload.
-        payload = payload.partition(",")[2]
+    The gate fails closed: an unreachable or unloaded liveness model is a 503,
+    never a silent pass — a verification that skipped the check it was
+    configured to run must not come back as a match.
+    """
     try:
-        raw = base64.b64decode(payload, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise ImageSourceError(field=field, reason="invalid_base64") from exc
-    _validate_image_bytes(raw)
-    return raw
-
-
-async def _decode_b64_image(value: str, *, field: str) -> bytes:
-    """Decode an inline base64 image payload to raw, size-validated bytes.
-
-    Accepts both a bare base64 string and a ``data:`` URI
-    (e.g. ``data:image/jpeg;base64,<payload>``). Large payloads decode off the
-    event loop — see :data:`_B64_OFFLOAD_THRESHOLD_BYTES`.
-    """
-    if len(value) >= _B64_OFFLOAD_THRESHOLD_BYTES:
-        return await asyncio.to_thread(_decode_b64_sync, value, field=field)
-    return _decode_b64_sync(value, field=field)
-
-
-async def _resolve_image_source(
-    *, b64: str | None, s3_url: str | None, fetcher, field: str, cacheable: bool = False
-) -> bytes:
-    """Resolve one image side (selfie or reference) to raw bytes.
-
-    Each side is supplied via exactly one of two inputs — inline base64
-    (``<field>_b64``) or an S3 URL (``<field>_s3``). Supplying both is
-    ambiguous and rejected (400); supplying neither is missing (400).
-
-    Whichever way the bytes arrive, they are passed through untouched — the
-    matcher decodes them exactly once, wherever the models live.
-
-    ``cacheable`` marks a side whose URL returns the same bytes on every
-    request — the enrolled reference. Only that side may be served from the
-    fetcher's bytes cache; the probe is a fresh capture behind a fresh URL, so
-    caching it would only churn the budget.
-    """
-    has_b64 = bool(b64 and b64.strip())
-    has_s3 = bool(s3_url and s3_url.strip())
-    if has_b64 and has_s3:
-        raise ImageSourceError(field=field, reason="ambiguous")
-    if has_b64:
-        return await _decode_b64_image(b64, field=field)
-    if has_s3:
-        raw = await fetcher.fetch(s3_url.strip(), cacheable=cacheable)
-        _validate_image_bytes(raw)
-        return raw
-    raise ImageSourceError(field=field, reason="missing")
+        return await ml.check_liveness(raw)
+    except httpx.HTTPStatusError as e:
+        RemoteFaceMatcher._raise_for_status(e)
+    except httpx.TimeoutException as e:
+        raise MLInferenceTimeoutError() from e
+    except httpx.HTTPError as e:
+        raise MLInferenceTransportError(str(e)) from e
 
 
 async def _run_match(
@@ -187,6 +159,7 @@ async def _run_match(
     threshold_source: str,
     probe_is_document: bool = False,
     min_sharpness: float = 0.0,
+    liveness_check: Callable[[], Awaitable[SpoofDetectionResult]] | None = None,
 ) -> dict:
     """Core 1:1 verification, scored in a single call to the ML service.
 
@@ -203,6 +176,10 @@ async def _run_match(
 
     With ``probe_is_document`` the extracted face's sharpness is reported in
     ``documentFace``; when ``min_sharpness`` > 0 a too-blurry face is rejected.
+
+    With ``liveness_check`` the probe's liveness runs concurrently with the
+    match, so the gate adds no serial round trip; a non-live probe is reported
+    with its score but ``isMatch`` false and ``livenessFailed`` true.
     """
 
     def _verification_result(is_match: bool, score: float | None) -> dict:
@@ -213,10 +190,24 @@ async def _run_match(
             "thresholdSource": threshold_source,
         }
 
+    liveness: SpoofDetectionResult | None = None
     try:
-        result = await matcher.match(
+        match_coro = matcher.match(
             probe_raw, reference_raw, want_probe_sharpness=probe_is_document
         )
+        if liveness_check is None:
+            result = await match_coro
+        else:
+            # return_exceptions so a failing match never leaves the liveness call
+            # running unobserved; the match error takes precedence (an
+            # undecodable probe is reported as decodeFailed, not as a 503).
+            result, liveness = await asyncio.gather(
+                match_coro, liveness_check(), return_exceptions=True
+            )
+            if isinstance(result, BaseException):
+                raise result
+            if isinstance(liveness, BaseException):
+                raise liveness
     except ProbeImageDecodeError:
         # An unreadable capture is an ordinary outcome, not a fault: report it in
         # the response body the same way the caller sees every other verdict.
@@ -266,6 +257,18 @@ async def _run_match(
         raise ReferenceFaceNotFoundError()
 
     score = float(result.score)
+    if liveness is not None and not liveness.is_live:
+        return {
+            "requestId": request_id,
+            "imageQualityAssessment": None,
+            "liveness": liveness.model_dump(),
+            "livenessFailed": True,
+            "iqaPassed": False,
+            "faceDetected": True,
+            "verificationResult": _verification_result(False, score),
+            "scores": _scores_dict(score, decision_threshold, None, liveness),
+            "documentFace": doc_diag,
+        }
     return VerifyResponse(
         request_id=request_id,
         image_quality_assessment=None,
@@ -275,7 +278,8 @@ async def _run_match(
             threshold=decision_threshold,
             threshold_source=threshold_source,
         ),
-        scores=VerificationScores(**_scores_dict(score, decision_threshold, None)),
+        scores=VerificationScores(**_scores_dict(score, decision_threshold, None, liveness)),
+        liveness=liveness,
         document_face=doc_diag,
         face_detected=True,
         iqa_passed=True,
@@ -302,6 +306,7 @@ async def _resolve_two_sources(
 
 @router.post("/facematch/verify")
 async def facematch_verify(
+    request: Request,
     req: FaceMatchRequest,
     settings: SettingsDep,
     matcher: MatcherDep,
@@ -318,7 +323,25 @@ async def facematch_verify(
     side is rejected.
     """
     request_id = str(uuid.uuid4())
-    probe_raw, reference_raw = await _resolve_two_sources(
+    probe_raw, reference_raw = await resolve_facematch_sources(req, fetcher)
+    return await facematch_from_bytes(
+        request,
+        request_id=request_id,
+        probe_raw=probe_raw,
+        reference_raw=reference_raw,
+        explicit_threshold=req.threshold,
+        settings=settings,
+        matcher=matcher,
+        learner=learner,
+    )
+
+
+async def resolve_facematch_sources(req: FaceMatchRequest, fetcher) -> tuple[bytes, bytes]:
+    """Resolve the (probe, reference) bytes of a facematch-shaped request body.
+
+    Shared with the checkpoint route, which takes the same selfie/source body.
+    """
+    return await _resolve_two_sources(
         probe_kwargs=dict(
             b64=req.face_check_b64, s3_url=req.face_check_s3, fetcher=fetcher, field="face_check"
         ),
@@ -327,9 +350,33 @@ async def facematch_verify(
             field="source_selfie", cacheable=True,
         ),
     )
+
+
+async def facematch_from_bytes(
+    request: Request,
+    *,
+    request_id: str,
+    probe_raw: bytes,
+    reference_raw: bytes,
+    explicit_threshold: float | None,
+    settings,
+    matcher,
+    learner,
+) -> dict:
+    """Facematch on already-resolved bytes: threshold, liveness gate, match, learning log.
+
+    The body of ``/facematch/verify`` after source resolution, factored out so
+    the checkpoint route runs the identical face decision alongside dress code.
+    """
     decision_threshold, threshold_source = _resolve_threshold(
-        req.threshold, learner, FACE_KIND, settings.verify_threshold
+        explicit_threshold, learner, FACE_KIND, settings.verify_threshold
     )
+    liveness_check = None
+    if settings.liveness_enabled:
+        # Read from app state only when the gate is on, so a deployment with
+        # liveness off never touches the liveness client at all.
+        ml = request.app.state.ml_async
+        liveness_check = lambda: _check_liveness(ml, probe_raw)  # noqa: E731
     body = await _run_match(
         request_id=request_id,
         probe_raw=probe_raw,
@@ -337,6 +384,7 @@ async def facematch_verify(
         matcher=matcher,
         decision_threshold=decision_threshold,
         threshold_source=threshold_source,
+        liveness_check=liveness_check,
     )
     await _record_outcome(learner, request_id=request_id, doc_type=FACE_KIND, body=body)
     return body
@@ -416,6 +464,7 @@ async def verification_feedback(
 # Backward-compatible alias for the original single endpoint (= face match).
 @router.post("/verify")
 async def verify_face(
+    request: Request,
     req: FaceMatchRequest,
     settings: SettingsDep,
     matcher: MatcherDep,
@@ -424,6 +473,7 @@ async def verify_face(
 ) -> dict:
     """Deprecated alias of ``/facematch/verify`` (kept for existing callers)."""
     return await facematch_verify(
+        request=request,
         req=req,
         settings=settings,
         matcher=matcher,

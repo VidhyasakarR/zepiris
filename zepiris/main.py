@@ -92,6 +92,7 @@ async def lifespan(app: FastAPI):
         far_target=settings.learning_far_target,
         enabled=settings.learning_enabled,
     )
+    app.state.ml_async = async_ml_client
     app.state.matcher = _build_matcher(settings, async_ml_client)
 
     # This process is I/O-bound — it fetches images and awaits the ML service —

@@ -21,6 +21,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from zepiris.ml_inference.blur_detection import BlurDetectionService
 from zepiris.ml_inference.concurrency import InferenceLimiter
+from zepiris.ml_inference.dresscode_detection import DresscodeDetectionService
+from zepiris.ml_inference.uniform_classifier import DEFAULT_HEAD_PATH, UniformClassifier
 from zepiris.ml_inference.face_embedding import FaceEmbeddingService
 from zepiris.ml_inference.image_quality_assessment import (
     ImageQualityAssessmentService,
@@ -57,6 +59,16 @@ class MLServiceSettings(BaseSettings):
     # Face-match-only mode: skip loading NSFW/spoof/blur models so the service
     # starts faster and lighter. IQA is disabled; only face embedding loads.
     face_match_only: bool = True
+    # Liveness on its own switch: loads the spoof (MiniFASNet) model even in
+    # face_match_only mode, so /v1/liveness/check can gate facematch without
+    # also paying for NSFW and blur. Pair with ZEPIRIS_LIVENESS_ENABLED on the
+    # API — with the API flag on and this off, every facematch returns 503.
+    liveness_enabled: bool = False
+    # Faces whose shorter side is below this (input pixels) are not scored by
+    # MiniFASNet — see OnnxSpoofDetectionService. 0 disables the gate. The model
+    # sees the face inside a 2.7x crop resized to 80x80, i.e. at ~30 px, so a
+    # face at or above 32 px loses no detail; below that it is upscaled blur.
+    spoof_min_face_px: int = 32
 
     nsfw_model_source: str = "auto"
     nsfw_hf_repo_id: str = ""
@@ -93,6 +105,35 @@ class MLServiceSettings(BaseSettings):
     blur_hf_model_file: str = "blur_model.pth"
     blur_local_model_path: str = "/app/models/blur_model.pth"
     blur_threshold: float = 0.5
+
+    # -- dress-code (uniform) detection --------------------------------------
+    # Loadshare-blue HSV band, OpenCV scale (H 0-179, S/V 0-255). Calibrated
+    # from reference photos: shirt fabric sits at hue ~113, saturation ~241.
+    dresscode_hue_min: int = 100
+    dresscode_hue_max: int = 122
+    # Deliberately below the observed marketing-backdrop saturation (~167)
+    # rather than above it: real fabric loses saturation fast in poor light, and
+    # rejecting a genuinely uniformed rider is worse than scoring a blue
+    # backdrop. The logo term is the brand discriminator, not this floor.
+    dresscode_sat_min: int = 110
+    dresscode_val_min: int = 50
+    dresscode_val_max: int = 245
+    dresscode_blue_weight: float = 0.7
+    dresscode_logo_weight: float = 0.3
+    dresscode_logo_enabled: bool = True
+    # Below this chest width the logo is too small to match reliably; the term
+    # is reported as null rather than guessed at.
+    dresscode_logo_min_chest_px: int = 80
+    dresscode_min_roi_pixels: int = 2000
+    dresscode_logo_template_path: str = ""
+    # Learned uniform classifier (SigLIP2 encoder + trained head). When the
+    # encoder file is present it makes the decision and the colour/logo terms
+    # above are reported as supporting signals; when absent the service falls
+    # back to the colour/logo rule. Build the encoder with
+    # scripts/export_dresscode_model.py.
+    dresscode_classifier_enabled: bool = True
+    dresscode_encoder_path: str = "/app/models/siglip2_base_vision.onnx"
+    dresscode_head_path: str = ""
 
     face_embedding_dim: int = 512
     # Detector input size. 512x512 detects large selfie faces and (via the
@@ -240,6 +281,30 @@ async def _warm_up(service, iterations: int) -> None:
 # ---------------------------------------------------------------------------
 # Lifespan — instantiate every model service once on startup
 # ---------------------------------------------------------------------------
+def _resolve_model_path(path: str) -> str | None:
+    """The configured model path, else ./models/<name>, else None.
+
+    Container paths (/app/models/...) are absent on native launches; falling
+    back to the repo's models/ dir lets those run without extra env.
+    """
+    if Path(path).exists():
+        return path
+    cwd_path = Path.cwd() / "models" / Path(path).name
+    if cwd_path.exists():
+        logger.warning("Model not at %s; using %s", path, cwd_path)
+        return str(cwd_path)
+    return None
+
+
+def _ort_providers(device: str) -> list[str]:
+    """CUDA first when a GPU device is configured and available, else CPU."""
+    import onnxruntime
+
+    if device != "cpu" and "CUDAExecutionProvider" in onnxruntime.get_available_providers():
+        return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    return ["CPUExecutionProvider"]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     s = get_ml_settings()
@@ -265,6 +330,8 @@ async def lifespan(app: FastAPI):
     # Read per request by the match route; kept on state so routes never import
     # settings from this module (which imports them).
     app.state.parallel_pair_embed = s.face_parallel_pair_embed
+    # Read by /readyz: with liveness on, a missing spoof model means not ready.
+    app.state.liveness_required = s.liveness_enabled
     # 0 = full JPEG decode; 2/4/8 = libjpeg native subsampled decode factor.
     app.state.jpeg_decode_reduction = s.face_jpeg_decode_reduction
 
@@ -323,6 +390,51 @@ async def lifespan(app: FastAPI):
         app.state.face_embedding_service = None
         failed.append("face_embedding")
 
+    # Dress-code detection reuses the face detector to anchor the torso region
+    # and loads no weights of its own, so it is available whenever face
+    # embedding is — including in face_match_only mode.
+    app.state.dresscode_service = None
+    if app.state.face_embedding_service is not None:
+        uniform_classifier = None
+        if s.dresscode_classifier_enabled:
+            encoder = _resolve_model_path(s.dresscode_encoder_path)
+            if encoder is None:
+                logger.warning(
+                    "Dress-code encoder not found at %s; using the colour/logo rule. "
+                    "Build it with scripts/export_dresscode_model.py",
+                    s.dresscode_encoder_path,
+                )
+            else:
+                try:
+                    uniform_classifier = UniformClassifier(
+                        encoder,
+                        head_path=s.dresscode_head_path or DEFAULT_HEAD_PATH,
+                        providers=_ort_providers(device),
+                    )
+                    logger.info("Dress code: learned classifier (%s)", encoder)
+                except Exception:
+                    logger.exception("Uniform classifier failed to load; using the colour/logo rule")
+        try:
+            app.state.dresscode_service = DresscodeDetectionService(
+                app.state.face_embedding_service,
+                hue_min=s.dresscode_hue_min,
+                hue_max=s.dresscode_hue_max,
+                sat_min=s.dresscode_sat_min,
+                val_min=s.dresscode_val_min,
+                val_max=s.dresscode_val_max,
+                blue_weight=s.dresscode_blue_weight,
+                logo_weight=s.dresscode_logo_weight,
+                logo_enabled=s.dresscode_logo_enabled,
+                logo_min_chest_px=s.dresscode_logo_min_chest_px,
+                min_roi_pixels=s.dresscode_min_roi_pixels,
+                logo_template_path=s.dresscode_logo_template_path or None,
+                classifier=uniform_classifier,
+            )
+        except Exception:
+            logger.exception("Failed to build DresscodeDetectionService")
+            app.state.dresscode_service = None
+            failed.append("dresscode")
+
     def _build_mobilenet_spoof(screen):
         svc = SpoofDetectionService(
             huggingface_repo_id=s.spoof_hf_repo_id,
@@ -337,7 +449,8 @@ async def lifespan(app: FastAPI):
         logger.info("Spoof engine: legacy MobileNetV3")
         return svc
 
-    if not s.face_match_only:
+    # Spoof loads for full IQA, or on its own when only liveness is wanted.
+    if not s.face_match_only or s.liveness_enabled:
         try:
             screen_detector = (
                 ScreenReplayDetector(threshold=s.spoof_screen_threshold)
@@ -345,21 +458,10 @@ async def lifespan(app: FastAPI):
                 else None
             )
             if s.spoof_engine == "onnx":
-                # Resolve each model path: fall back to ./models when the configured
-                # (container) path is absent, so native launches work without extra env.
-                def _resolve(path: str) -> str | None:
-                    if Path(path).exists():
-                        return path
-                    cwd_path = Path.cwd() / "models" / Path(path).name
-                    if cwd_path.exists():
-                        logger.warning("ONNX model not at %s; using %s", path, cwd_path)
-                        return str(cwd_path)
-                    return None
-
                 # (path, crop_scale): V2 at 2.7x, V1SE at 4.0x (canonical Silent-Face).
                 candidates = [
-                    (_resolve(s.spoof_onnx_model_path), 2.7),
-                    (_resolve(s.spoof_onnx_model_path_2), 4.0),
+                    (_resolve_model_path(s.spoof_onnx_model_path), 2.7),
+                    (_resolve_model_path(s.spoof_onnx_model_path_2), 4.0),
                 ]
                 models = [(p, scale) for p, scale in candidates if p is not None]
                 face_svc = app.state.face_embedding_service
@@ -373,6 +475,7 @@ async def lifespan(app: FastAPI):
                         face_detector=face_svc.detect_box,
                         live_threshold=s.spoof_onnx_live_threshold,
                         screen_replay_detector=screen_detector,
+                        min_face_px=s.spoof_min_face_px,
                     )
                     app.state.spoof_service.load_model()
                     logger.info("Spoof engine: MiniFASNet ONNX ensemble (%d model(s))", len(models))
@@ -386,6 +489,7 @@ async def lifespan(app: FastAPI):
             app.state.spoof_service = None
             failed.append("spoof")
 
+    if not s.face_match_only:
         try:
             app.state.blur_service = BlurDetectionService(
                 huggingface_repo_id=s.blur_hf_repo_id,
@@ -404,12 +508,19 @@ async def lifespan(app: FastAPI):
     nsfw = app.state.nsfw_service
     spoof = app.state.spoof_service
     blur = app.state.blur_service
-    if nsfw is not None and spoof is not None and blur is not None:
+    if nsfw is not None and spoof is not None:
+        # Blur may be None: it degrades the result by one field, where a missing
+        # NSFW or spoof model would leave a safety gate unanswered.
         app.state.iqa_service = ImageQualityAssessmentService(
             nsfw_service=nsfw,
             spoof_service=spoof,
             blur_service=blur,
         )
+        if blur is None:
+            logger.warning(
+                "IQA enabled without blur: /v1/iqa/assess will return blur=null and "
+                "/v1/iqa/blur_check will 503 until the blur model loads"
+            )
     elif s.face_match_only:
         # Face-match-only deliberately does not load the IQA models; this is the
         # configured state, not a fault, and must not page anyone.
@@ -418,8 +529,8 @@ async def lifespan(app: FastAPI):
     else:
         app.state.iqa_service = None
         logger.error(
-            "IQA disabled: need all three models loaded (nsfw_missing=%s spoof_missing=%s "
-            "blur_missing=%s)",
+            "IQA disabled: nsfw and spoof must both load (nsfw_missing=%s spoof_missing=%s); "
+            "blur is optional (blur_missing=%s)",
             nsfw is None,
             spoof is None,
             blur is None,

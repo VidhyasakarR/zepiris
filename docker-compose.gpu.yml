@@ -48,6 +48,10 @@ services:
     read_only: false
     environment:
       ML_SERVICE_ML_DEVICE: "cuda"
+      # Liveness (MiniFASNet anti-spoof) model. Loads the spoof model alone,
+      # without NSFW/blur. Flip together with ZEPIRIS_LIVENESS_ENABLED on the API:
+      # with the API flag on and this off, every facematch returns 503.
+      ML_SERVICE_LIVENESS_ENABLED: "false"
       # balanced, not accurate: the two tiers share the SAME recognizer
       # (w600k_r50), so match scores and thresholds are unchanged — the only
       # difference is the detector. Measured on a T4: accurate (det_10g @512)
@@ -79,7 +83,7 @@ services:
       # queue absorbed 200 req/s by answering at up to 27.6s with nothing shed
       # — served, but long after the caller had gone; at 10s the vegeta p99
       # still ran 24s+ because the waiting simply happened before the limiter.
-      # Keep the API's own budget (ZEPIRIS_ML_INFERENCE_TIMEOUT_SECONDS, 60s)
+      # Keep the API's own budget (ZEPIRIS_ML_INFERENCE_TIMEOUT_SECONDS, 10s)
       # above this, or the API gives up before the ML service sheds.
       ML_SERVICE_INFERENCE_QUEUE_TIMEOUT_SECONDS: "2"
       # Parallel pair embedding fans one request's two sides across CPU workers.
@@ -204,3 +208,17 @@ services:
       # turns into shedding healthy requests. S3 GET p99 in-region is far
       # below this; the timeout exists for the pathological connection.
       ZEPIRIS_REFERENCE_FETCH_TIMEOUT_SECONDS: "5"
+
+      # 10s, not the 60s default. The caller (titan's zepiris feign client) gives up at 3s, so any
+      # request still running past that is work nobody will read — it holds an admission slot and an
+      # inference slot while the caller has already recorded a failure and alerted. 60s made one
+      # slow request cost a minute of capacity during exactly the incident that caused it. Still well
+      # above the 2s inference queue timeout below, so the shedding path is unchanged; this only
+      # bounds the pathological hang. Titan's 3s read timeout is the number to align to if this ever
+      # needs to be exact — see the feign zepiris block in application-prod-titan-sqs.yml.
+      ZEPIRIS_ML_INFERENCE_TIMEOUT_SECONDS: "10"
+
+      # Liveness gate on /facematch/verify (runs concurrently with the match).
+      # Requires ML_SERVICE_LIVENESS_ENABLED above. Load-test before enabling:
+      # it adds one face detection + MiniFASNet pass per request.
+      ZEPIRIS_LIVENESS_ENABLED: "false"

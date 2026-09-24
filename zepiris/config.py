@@ -31,6 +31,17 @@ class Settings(BaseSettings):
     # 0 = disabled (flag only, never reject). A sharp ID photo is typically
     # > 100; observed blurry captures fall in the 5–20 range.
     doc_min_sharpness: float = 0.0
+    # Dress-code (uniform) match threshold. Unset (the default) uses the
+    # threshold the ML service reports for its engine: the learned classifier's
+    # calibrated value (0.35), or 0.55 for the colour/logo fallback. Set it only
+    # to pin one value regardless of engine.
+    dresscode_threshold: float | None = None
+    # Liveness (anti-spoof) gate on /facematch/verify. When on, the probe is
+    # checked by the ML service's /v1/liveness/check concurrently with the match,
+    # and a non-live probe is never reported as a match. Needs
+    # ML_SERVICE_LIVENESS_ENABLED on the ML service, or every call returns 503.
+    # Off by default: facematch stays a pure 1:1 match.
+    liveness_enabled: bool = False
     reference_fetch_timeout_seconds: float = 10.0
     # CPU embedding (antelopev2/ResNet100) plus the multi-pass detection cascade
     # can take well over httpx's 5s default on hard document images.

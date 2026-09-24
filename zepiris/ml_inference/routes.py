@@ -14,6 +14,7 @@ from starlette.concurrency import run_in_threadpool
 from zepiris.framing import FrameError, decode_pair_frame
 from zepiris.ml_inference.deps import (
     BlurDep,
+    DresscodeDep,
     FaceEmbeddingDep,
     IQADep,
     NSFWDep,
@@ -22,6 +23,7 @@ from zepiris.ml_inference.deps import (
 from zepiris.ml_inference.embedding_cache import reference_digest
 from zepiris.schemas.ml_inference import (
     BlurDetectionResult,
+    DresscodeCheckResult,
     FaceDetectionResult,
     FaceEmbeddingResult,
     FaceMatchResult,
@@ -140,6 +142,13 @@ def readyz(request: Request):
         return JSONResponse(
             status_code=503,
             content={"status": "not_ready", "reason": "face_embedding_model_unavailable"},
+        )
+    # Liveness is a security gate: an instance told to serve it but without the
+    # model would 503 every facematch, so it must not take traffic.
+    if getattr(state, "liveness_required", False) and getattr(state, "spoof_service", None) is None:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "reason": "spoof_model_unavailable"},
         )
     if not getattr(state, "warmed_up", False):
         return JSONResponse(
@@ -291,6 +300,23 @@ def detect_spoof(
     return service.forward(image_rgb)
 
 
+@router.post("/v1/liveness/check", response_model=SpoofDetectionResult)
+async def liveness_check(request: Request, service: SpoofDep) -> SpoofDetectionResult:
+    """Liveness (anti-spoof) on raw image bytes — the facematch gate.
+
+    Takes the original upload as the body (``application/octet-stream``), like
+    ``/v1/face/match``, so the probe is never base64-encoded on the hot path.
+    Held to the same inference limiter as matching: it runs a face detection
+    plus the MiniFASNet ensemble, and must shed under overload rather than queue.
+    """
+    raw = await request.body()
+    limiter = request.app.state.inference_limiter
+    async with limiter.slot():
+        return await run_in_threadpool(
+            lambda: service.forward(_decode_image_bytes(raw, field="probe"))
+        )
+
+
 @router.post("/v1/iqa/blur_check", response_model=BlurDetectionResult)
 def detect_blur(
     service: BlurDep,
@@ -329,3 +355,19 @@ def assess_image_quality(
     """Run combined image quality assessment (NSFW + spoof + blur in parallel)."""
     image_rgb = _decode_base64_image(payload.image_b64)
     return service.assess(image_rgb)
+
+
+@router.post("/v1/dresscode/check", response_model=DresscodeCheckResult)
+async def dresscode_check(request: Request, payload: ImagePayload, service: DresscodeDep):
+    """Score whether the image shows the blue Loadshare uniform shirt.
+
+    Returns raw signals only — the decision threshold is applied by the API
+    layer, so a per-request threshold costs no second inference call.
+
+    The work is a face detection, the learned classifier (two SigLIP2 passes,
+    batched) and a colour/logo pass — CPU/GPU-bound, so it runs in a worker
+    thread and holds an inference-limiter slot like matching does.
+    """
+    image_rgb = _decode_base64_image(payload.image_b64)
+    async with request.app.state.inference_limiter.slot():
+        return await run_in_threadpool(service.check, image_rgb)

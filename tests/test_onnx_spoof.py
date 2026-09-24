@@ -91,3 +91,24 @@ def test_screen_gate_forces_not_live():
 
     result = _service(screen=_AlwaysScreen()).forward(_real_face_rgb())
     assert result.is_live is False
+
+
+def test_face_too_small_is_not_scored():
+    """A face below min_face_px gets a reason, not a noisy model verdict."""
+    svc = OnnxSpoofDetectionService(
+        models=[(str(_MODEL), 2.7)],
+        face_detector=_centered_detector,
+        min_face_px=10_000,  # larger than any gallery face
+    )
+    result = svc.forward(_real_face_rgb())
+    assert result.is_live is False
+    assert result.reason == "face_too_small"
+
+
+def test_face_above_min_size_is_scored():
+    svc = OnnxSpoofDetectionService(
+        models=[(str(_MODEL), 2.7)],
+        face_detector=_centered_detector,
+        min_face_px=10,
+    )
+    assert svc.forward(_real_face_rgb()).reason is None
