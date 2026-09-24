@@ -1,0 +1,27 @@
+# Overrides for a single r7g.large (Graviton arm64, 2 vCPU, 16 GB, no GPU).
+# Layer it on the CPU compose file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.r7g.yml up -d --build
+#
+# The base file's defaults are sized for bigger CPU hosts; these adjust them for
+# two cores and turn on the checkpoint flow (liveness + dress code).
+#
+# Ports stay as in the base file (8000, 8001). Keep them closed in the security
+# group (allow only SSH) and reach the UI through an SSH tunnel; never open 8001.
+services:
+  ml-inference:
+    environment:
+      # Liveness model (MiniFASNet) on — /v1/checkpoint/verify gates on it.
+      ML_SERVICE_LIVENESS_ENABLED: "true"
+      # The base default (0 = CPU count - 1) is ONE slot on 2 vCPUs, which would
+      # run a checkpoint's face match, liveness and dress code one after another.
+      ML_SERVICE_MAX_CONCURRENT_INFERENCES: "2"
+      # Shed load quickly instead of queueing 20 s past any caller's timeout.
+      ML_SERVICE_INFERENCE_QUEUE_TIMEOUT_SECONDS: "5"
+
+  api:
+    environment:
+      ZEPIRIS_LIVENESS_ENABLED: "true"
+      ZEPIRIS_ML_INFERENCE_TIMEOUT_SECONDS: "15"
+      # One worker per core; the API is I/O-bound.
+      ZEPIRIS_API_WORKERS: "2"
