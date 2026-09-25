@@ -33,8 +33,11 @@ const MP_MODEL =
 const MP_FACE_MODEL =
   "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
 
-export const ZOOM_LEVELS = [0.75, 0.8, 0.9, 1];
-const clampZoom = (z) => Math.min(1, Math.max(0.5, Number(z) || 1));
+// 1 = fill the screen (crops the camera picture on a tall phone); lower = show
+// more of it. Below the "whole picture" point (about 0.6 on a 9:20 phone with a
+// 3:4 camera) the picture no longer grows smaller: it is all shown, with bars.
+export const ZOOM_LEVELS = [0.25, 0.5, 0.75, 0.9, 1];
+const clampZoom = (z) => Math.min(1, Math.max(0.25, Number(z) || 1));
 
 /** Guide geometry for a content area 100 wide × Hc tall. */
 export function geometry(Hc) {
@@ -591,7 +594,12 @@ export function createCapture(stage, options = {}) {
     const my = gen, stale = () => my !== gen;
     try {
       const s = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "user", width: { ideal: 1080 }, height: { ideal: 1440 } },
+        // Asked in the SENSOR's (landscape) orientation, with no resizing: Chrome on
+        // Android reads width/height that way, and a portrait request (1080×1440)
+        // made it crop the frame to a narrow strip — a heavily zoomed-in picture.
+        // This returns the camera's native 3:4 mode (1080×1440 portrait on a phone),
+        // the full field of view the phone's own camera app shows.
+        video: { facingMode: "user", width: { ideal: 1440 }, height: { ideal: 1080 }, resizeMode: "none" },
         audio: false,
       });
       if (stale()) { s.getTracks().forEach((t) => t.stop()); return false; }
@@ -621,6 +629,15 @@ export function createCapture(stage, options = {}) {
     // re-fit the picture and the outline when it does.
     video.addEventListener("resize", layout);
     const track = stream.getVideoTracks()[0];
+    // Where the camera itself can zoom out (wide front lenses report zoom < 1),
+    // use its widest setting: a real wider view, not just less cropping.
+    try {
+      const caps = track?.getCapabilities?.();
+      if (caps?.zoom && caps.zoom.min < (track.getSettings?.().zoom ?? 1)) {
+        await track.applyConstraints({ advanced: [{ zoom: caps.zoom.min }] });
+      }
+    } catch (_) { /* not supported: layout zoom only */ }
+    if (stale()) return false;
     if (track) track.onended = () => {
       if (!stream || capturing) return;
       stop();

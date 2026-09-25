@@ -92,7 +92,8 @@ def test_static_is_an_allow_list() -> None:
 def test_selfie_zoom_param() -> None:
     c = _client()
     assert _config(c.post("/ui/selfie", json={"checks": ["logo"], "zoom": "0.8"}).text)["zoom"] == 0.8
-    assert c.post("/ui/selfie", json={"checks": ["logo"], "zoom": 0.3}).status_code == 422
+    assert _config(c.post("/ui/selfie", json={"checks": ["logo"], "zoom": 0.25}).text)["zoom"] == 0.25
+    assert c.post("/ui/selfie", json={"checks": ["logo"], "zoom": 0.2}).status_code == 422
     assert c.post("/ui/selfie", json={"checks": ["logo"], "zoom": "wide"}).status_code == 422
 
 

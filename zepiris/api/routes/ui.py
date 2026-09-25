@@ -107,7 +107,7 @@ def _selfie_config(raw: dict, allow_threshold_override: bool = False) -> dict:
         if not allow_threshold_override:
             raise HTTPException(status_code=403, detail="threshold overrides are disabled on this server")
         cfg.update({k: v for k, v in thresholds.items() if v is not None})
-    zoom = number("zoom", 0.5, 1)
+    zoom = number("zoom", 0.25, 1)
     if zoom is not None:
         cfg["zoom"] = zoom
     challenge = str(raw.get("challenge") or "").strip().lower()

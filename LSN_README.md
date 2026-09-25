@@ -149,7 +149,7 @@ A full-screen camera page for riders. It is opened with a **POST**, as a form or
 |---|---|
 | `checks` | Comma list or array of `face_match`, `dress_color`, `logo` (default: all) |
 | `source_selfie_s3` / `source_selfie_b64` | The enrolled selfie; one of them is required for `face_match` |
-| `zoom` | Camera zoom-out, `0.75` / `0.8` / `0.9` / `1` (default `0.75`). Chips on screen let the rider change it |
+| `zoom` | Camera zoom-out, `0.25` / `0.5` / `0.75` / `0.9` / `1` (default `0.5`). Chips on screen let the rider change it |
 | `challenge` | Liveness challenge before Capture unlocks: `blink` (default), `turn`, `random` or `none` |
 | `threshold`, `dress_color_threshold`, `logo_threshold` | Pass-mark overrides. **Refused (403) unless `ZEPIRIS_ALLOW_THRESHOLD_OVERRIDE=true`**, and always limited to 0.05–0.99 |
 
@@ -196,18 +196,19 @@ How the page behaves:
   - Retake is disabled while Submit is running, and replies that arrive for an older photo are ignored.
   - Server text is always inserted as text, never as HTML.
 - **Submit** sends the **captured photo** (`face_check_b64`) plus the config above in the body of `POST /v1/checkpoint/verify`, then shows the result.
-- **Zoom:** a web page can't widen the lens. Filling a tall phone screen crops the camera picture, and zooming out (0.75×) crops less, showing more of the camera's real view. The guide, the skeleton and the saved photo all use the visible part of the picture.
+- **Zoom:** a web page can't widen the lens. Filling a tall phone screen crops the camera picture, and zooming out crops less, showing more of the camera's real view. From about 0.6× down, the camera's whole picture is shown with bars above and below, so 0.5× and 0.25× look the same on most phones. If the front camera reports an optical zoom below 1, its widest setting is used. The guide, the skeleton and the saved photo all use the visible part of the picture.
+- **Camera mode:** the page asks for 1440×1080 with `resizeMode: none`. Chrome on Android reads width and height in the sensor's landscape orientation, so this returns the native 3:4 mode (1080×1440 portrait), the full view the phone's own camera app shows. Asking for 1080×1440 made Chrome crop the frame to a landscape strip, a heavily zoomed-in picture (seen on a Redmi 2312FRAFDI, WebView 152).
 - **Host apps:** the page posts the result to a `ZepirisBridge` JavaScript channel, which the Android app listens on.
 
 ```bash
-curl -s -X POST https://<host>/ui/selfie -d 'checks=face_match,dress_color,logo' -d 'source_selfie_s3=https://bucket.s3.amazonaws.com/rider.jpg' -d 'zoom=0.75'
+curl -s -X POST https://<host>/ui/selfie -d 'checks=face_match,dress_color,logo' -d 'source_selfie_s3=https://bucket.s3.amazonaws.com/rider.jpg' -d 'zoom=0.5'
 ```
 
 ## Android app (`mobile/lsn_checkpoint`)
 
 The flow is **Config → selfie page → result**.
 
-1. **Config screen:** the API address, which checks to run, the camera size (zoom 0.75× / 0.8× / 0.9× / 1×), the liveness check (blink / head turn / random / off), and the enrolled selfie (S3 link, or an image from the gallery, copied into app storage). These are saved on the phone.
+1. **Config screen:** which checks to run, the camera size (zoom 0.25× / 0.5× / 0.75× / 0.9× / 1×, default 0.5×), the liveness check (blink / head turn / random / off), and the enrolled selfie (S3 link, or an image from the gallery, copied into app storage). These are saved on the phone.
 2. **Open selfie:** loads the server's `/ui/selfie` in a full-screen WebView, POSTing that config. It's the same page as on the web, so the guide, zoom, green-to-capture and Submit behave identically.
 3. **Result:** the page shows it, and the app shows a Cleared / Not cleared chip.
 
@@ -222,7 +223,7 @@ adb install -r mobile/lsn_checkpoint/build/app/outputs/flutter-apk/app-release.a
 ```
 
 Notes:
-- **The API address must be https** (for example the ngrok link), because WebView cameras only work on secure pages.
+- **The server address is built in** (`kDefaultApiBase` in `lib/settings.dart`, now `https://3-108-193-187.sslip.io`) and not shown to riders. It must be https, because WebView cameras only work on secure pages. On the EC2, Caddy terminates TLS (a Let's Encrypt certificate via sslip.io) and forwards to the API on 8000.
 - The WebView uses a non-browser user agent so ngrok's free-tier "Visit site" warning page doesn't interrupt it.
 - **WebView lock-down:**
   - Only the configured server's pages get the camera (never the microphone).

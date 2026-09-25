@@ -12,7 +12,7 @@
     source_selfie_s3      enrolled selfie link   } one of these, required when
     source_selfie_b64     enrolled selfie base64 } face_match is requested
     threshold, dress_color_threshold, logo_threshold   optional pass-mark overrides
-    zoom                  camera zoom-out: 0.75, 0.8, 0.9 or 1 (default 0.75); the
+    zoom                  camera zoom-out: 0.25, 0.5, 0.75, 0.9 or 1 (default 0.5); the
                           rider can still change it with the on-screen chips
     challenge             active liveness before capture: blink (default), turn,
                           random or none
@@ -117,7 +117,7 @@ const showError = (m) => { $("error").textContent = m; $("error").hidden = !m; }
 
 // ---- capture: enabled only while the pose is aligned (outline green) --------
 const cam = createCapture($("stage"), {
-  zoom: cfg?.zoom ?? 0.75,
+  zoom: cfg?.zoom ?? 0.5,
   challenge: cfg?.challenge ?? "blink",
   onReady: (ok) => {
     $("snapBtn").disabled = !ok;
