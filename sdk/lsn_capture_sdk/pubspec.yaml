@@ -1,6 +1,6 @@
 name: lsn_capture_sdk
 description: "Loadshare checkpoint selfie capture: native Android camera, on-device face checks and blink/head-turn liveness, then photo quality check and scores (no pass/fail)."
-version: 1.1.0
+version: 1.6.3
 publish_to: none # internal: add it by path or git, see README
 
 environment:

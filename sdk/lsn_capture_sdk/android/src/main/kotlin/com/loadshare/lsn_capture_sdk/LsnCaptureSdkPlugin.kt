@@ -44,7 +44,11 @@ class LsnCaptureSdkPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Acti
                     activity.startActivityForResult(
                         Intent(activity, CaptureActivity::class.java)
                             .putExtra(CaptureActivity.EXTRA_CHALLENGE, call.argument<String>("challenge") ?: "blink")
-                            .putExtra("debug", call.argument<Boolean>("debug") ?: false),
+                            .putExtra("debug", call.argument<Boolean>("debug") ?: false)
+                        .putExtra(CaptureActivity.EXTRA_LIGHT, call.argument<Boolean>("light") ?: false)
+                        .putExtra(CaptureActivity.EXTRA_MAX_SIDE, call.argument<Int>("maxSide") ?: 2592)
+                        .putExtra(CaptureActivity.EXTRA_JPEG_QUALITY, call.argument<Int>("jpegQuality") ?: 92)
+                        .putExtra(CaptureActivity.EXTRA_BRIGHTNESS, (call.argument<Number>("brightness") ?: 0).toFloat()),
                         REQUEST,
                     )
                 } catch (e: Exception) {

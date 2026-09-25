@@ -22,9 +22,18 @@ class NativeCapture {
   static Future<({String path, Map<String, dynamic> stats})?> capture(
     String challenge, {
     bool debug = false,
+    bool screenLight = false,
+    LsnPhotoQuality photoQuality = LsnPhotoQuality.high,
+    double brightness = 0,
   }) async {
-    final r = await _ch
-        .invokeMethod<Map>('capture', {'challenge': challenge, 'debug': debug});
+    final r = await _ch.invokeMethod<Map>('capture', {
+      'challenge': challenge,
+      'debug': debug,
+      'light': screenLight,
+      'maxSide': photoQuality.maxSide,
+      'jpegQuality': photoQuality.jpegQuality,
+      'brightness': brightness.clamp(-2.0, 2.0),
+    });
     if (r == null || r['path'] == null) return null;
     var stats = <String, dynamic>{};
     try {
@@ -90,8 +99,13 @@ class _CaptureScreenState extends State<CaptureScreen> {
       _error = null;
     });
     try {
-      final shot = await NativeCapture.capture(widget.config.challenge.wire,
-          debug: widget.debug);
+      final shot = await NativeCapture.capture(
+        widget.config.challenge.wire,
+        debug: widget.debug,
+        screenLight: widget.config.screenLight,
+        photoQuality: widget.config.photoQuality,
+        brightness: widget.config.brightness,
+      );
       final file = shot == null ? null : File(shot.path);
       if (!mounted || mine != _attempt) {
         file
@@ -188,8 +202,14 @@ class _CaptureScreenState extends State<CaptureScreen> {
               // The true scene, not mirrored, exactly as sent to the server
               // (the live preview is unmirrored too, so the two match).
               Center(
-                  child: Image.memory(_photo!,
-                      fit: BoxFit.contain, gaplessPlayback: true))
+                child: Image.memory(
+                  _photo!,
+                  fit: BoxFit.contain,
+                  gaplessPlayback: true,
+                  // shrunk to fit the screen: high filtering keeps a sharp photo crisp
+                  filterQuality: FilterQuality.high,
+                ),
+              )
             else if (_stage == _Stage.capturing)
               const Center(child: CircularProgressIndicator()),
             Positioned(
@@ -212,9 +232,10 @@ class _CaptureScreenState extends State<CaptureScreen> {
                       const Text(
                         'Checkpoint selfie',
                         style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w700,
-                            fontSize: 16),
+                          color: Colors.white,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 16,
+                        ),
                       ),
                     ],
                   ),
@@ -250,42 +271,80 @@ class _CaptureScreenState extends State<CaptureScreen> {
   }
 
   List<Widget> _dock() {
-    Widget banner(String t, {Color? color}) => Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-          margin: const EdgeInsets.only(bottom: 10),
-          decoration: BoxDecoration(
-              color: color ?? const Color(0xCC0F1728),
-              borderRadius: BorderRadius.circular(22)),
-          child: Text(
-            t,
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-                color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
+    // busy: a spinner beside the text, for the waits (camera, quality, scoring)
+    Widget busy(String t) => Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xCC0F1728),
+        borderRadius: BorderRadius.circular(22),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(
+              strokeWidth: 2.5,
+              color: Colors.white,
+            ),
           ),
-        );
+          const SizedBox(width: 12),
+          Flexible(
+            child: Text(
+              t,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+    Widget banner(String t, {Color? color}) => Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        color: color ?? const Color(0xCC0F1728),
+        borderRadius: BorderRadius.circular(22),
+      ),
+      child: Text(
+        t,
+        textAlign: TextAlign.center,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 15,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
     ButtonStyle big(Color c) => FilledButton.styleFrom(
-          backgroundColor: c,
-          foregroundColor: Colors.white,
-          disabledBackgroundColor: _muted,
-          disabledForegroundColor: Colors.white70,
-          minimumSize: const Size.fromHeight(54),
-          textStyle: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
-        );
+      backgroundColor: c,
+      foregroundColor: Colors.white,
+      disabledBackgroundColor: _muted,
+      disabledForegroundColor: Colors.white70,
+      minimumSize: const Size.fromHeight(54),
+      textStyle: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
+    );
 
     switch (_stage) {
       case _Stage.capturing:
-        return [banner('Opening the camera…')];
+        return [busy('Opening the camera…')];
       case _Stage.checking:
-        return [banner('Checking the photo…')];
+        return [busy('Checking photo quality…')];
       case _Stage.scoring:
-        return [banner('Getting your scores…')];
+        return [busy('Getting your scores…')];
       case _Stage.error:
         return [
           banner(_error ?? 'Something went wrong', color: _bad),
           FilledButton(
-              style: big(widget.accent),
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Back')),
+            style: big(widget.accent),
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Back'),
+          ),
         ];
       case _Stage.review:
         final warnings = _warnings;
@@ -312,11 +371,13 @@ class _CaptureScreenState extends State<CaptureScreen> {
                 child: FilledButton(
                   style: big(warnings.isNotEmpty ? _muted : widget.accent),
                   onPressed: _use,
-                  child: Text(_error != null
-                      ? 'Try again'
-                      : warnings.isNotEmpty
-                          ? 'Use anyway'
-                          : 'Use photo'),
+                  child: Text(
+                    _error != null
+                        ? 'Try again'
+                        : warnings.isNotEmpty
+                        ? 'Use anyway'
+                        : 'Use photo',
+                  ),
                 ),
               ),
             ],

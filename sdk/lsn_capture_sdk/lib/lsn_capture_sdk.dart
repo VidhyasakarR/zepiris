@@ -35,6 +35,7 @@ export 'src/api.dart'
         LsnCaptureConfig,
         LsnCaptureResult,
         LsnChallenge,
+        LsnPhotoQuality,
         LsnScores,
         kLsnChecks;
 
@@ -59,9 +60,10 @@ class LsnCapture {
     return Navigator.of(context).push<LsnCaptureResult>(
       MaterialPageRoute(
         builder: (_) => CaptureScreen(
-            config: config,
-            accent: accent ?? const Color(0xFF1F5FD6),
-            debug: debug),
+          config: config,
+          accent: accent ?? const Color(0xFF1F5FD6),
+          debug: debug,
+        ),
       ),
     );
   }

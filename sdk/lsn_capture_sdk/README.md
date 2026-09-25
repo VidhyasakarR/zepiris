@@ -44,6 +44,9 @@ A clear photo goes straight to scoring and back to the host.
 - **Validated up front.** `LsnCaptureConfig` throws `ArgumentError` for a bad `apiBase`, unknown `checks`, or `face_match` without a source selfie.
 - **`submit: false`** returns the photo unscored, so the host can score it itself.
 - **`qualityCheck: false`** skips `/v1/quality/check`.
+- `screenLight: true` starts with the screen light 💡 on: the camera picture shrinks and the white around it lights the face. The rider can toggle it on the camera screen either way.
+- `photoQuality`: `LsnPhotoQuality.standard` (1920 px, JPEG 90), `.high` (2592 px, JPEG 92, the default) or `.max` (full resolution, JPEG 95, up to 4.5 MB).
+- `brightness`: starting camera brightness in EV (-2 to +2, default 0); the rider can adjust it with the ☀ slider on the camera screen.
 - **`qualityTimeout` / `scoreTimeout`** default to 8 s and 40 s.
 - **`httpClient`** is never closed by the SDK. It closes only the client it created itself.
 
@@ -57,7 +60,7 @@ A clear photo goes straight to scoring and back to the host.
 
 | Part | What it does |
 |---|---|
-| `CaptureActivity.kt` | CameraX with three use cases, each at its own resolution. **Preview** and **photo** are 4:3, the camera's native shape and the framing of the phone's own camera app. The photo is 1920×1440 (portrait 1440×1920). **Analysis** is 640×480, in the same 4:3 field of view. The preview is fitted, not cropped, so the rider sees exactly what the photo contains. |
+| `CaptureActivity.kt` | CameraX with three use cases, each at its own resolution. **Preview** and **photo** are 4:3, the camera's native shape and the framing of the phone's own camera app. The photo size comes from `photoQuality` (default 2592×1944, portrait 1944×2592). **Analysis** is 640×480, in the same 4:3 field of view. The preview is fitted, not cropped, so the rider sees exactly what the photo contains. |
 | `FaceEngine.kt` | ML Kit face detection in fast mode, with eye-open classification and tracking. It comes from Google Play Services, so the APK only grows by about 0.8 MB. `warmUp` asks Play Services to install the model if it's missing, runs one dummy frame, and initialises CameraX. |
 | `Checks.kt` | The live checks, in order: light, exactly one face, size, centred, enough T-shirt in frame, head frontal, eyes open, holding still. Also the liveness challenge. The T-shirt rule is the server's own (`capture_quality.py`): at least 35% of the region from the chin down to 3 face heights must be in frame. Covered by JUnit tests in `src/test`. |
 | `capture_screen.dart` | After the photo: quality warnings, scoring, then back to the host (Retake / Use anyway / Try again when needed). |
@@ -66,7 +69,7 @@ Liveness:
 - **Blink:** measured against the rider's own open-eye level, so glasses and dim light work. A wink or a still photo never passes.
 - **Turn:** turn more than 20° to one side, then come back within 8°.
 - **Face swaps:** a second face, or 1.2 s with no face, restarts the challenge.
-- **Low light:** the screen turns white for 0.8 s while the photo is taken, at full brightness.
+- **Low light:** a 💡 screen light (the white around a shrunk camera picture lights the face) and a ☀ brightness slider (camera exposure) on the camera screen. Dim light is a warning, not a block.
 
 ## Numbers
 

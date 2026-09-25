@@ -1,6 +1,6 @@
 # Loadshare SDKs
 
-## LSN Capture SDK (`lsn_capture_sdk/`, v1.0.1)
+## LSN Capture SDK (`lsn_capture_sdk/`, v1.6.3)
 
 The checkpoint selfie as a drop-in Flutter plugin with a native Android camera screen. It covers the oval guide, live face and T-shirt checks, and blink or head-turn liveness. It then runs the server's photo quality check and `/v1/checkpoint/verify`, and shows the result. Full API and design: [`lsn_capture_sdk/README.md`](lsn_capture_sdk/README.md).
 
@@ -11,7 +11,7 @@ The checkpoint selfie as a drop-in Flutter plugin with a native Android camera s
 | Added to an app (arm64 APK) | **+0.82 MB**: 17.95 MB → 18.78 MB, measured |
 | Added to an app (armeabi-v7a APK) | +0.90 MB |
 | SDK's own compiled code (`.aar`) | 42 KB |
-| Source package (`dist/lsn_capture_sdk-1.0.1.zip`) | 31 KB, 18 files |
+| Source package (`dist/lsn_capture_sdk-1.6.3.zip`) | 31 KB, 18 files |
 
 The size stays small because the face model isn't in the APK: Google Play Services delivers it and keeps it updated. What does ship is CameraX plus about 40 KB of SDK code.
 
@@ -24,7 +24,7 @@ The size stays small because the face model isn't in the APK: Google Play Servic
 
 ### Install: pick one
 
-**1. Copy the folder:** unzip `dist/lsn_capture_sdk-1.0.1.zip` into your project, then:
+**1. Copy the folder:** unzip `dist/lsn_capture_sdk-1.6.3.zip` into your project, then:
 ```yaml
 dependencies:
   lsn_capture_sdk:
@@ -37,7 +37,7 @@ dependencies:
   lsn_capture_sdk:
     git:
       url: https://github.com/akshat-sachan-LSN/zepiris.git
-      ref: dress-code-poc        # or a release tag, e.g. lsn_capture_sdk-v1.0.1
+      ref: dress-code-poc        # or a release tag, e.g. lsn_capture_sdk-v1.6.3
       path: sdk/lsn_capture_sdk
 ```
 
@@ -60,5 +60,5 @@ The LSN Checkpoint app (`mobile/lsn_checkpoint`) is a working example: `lib/scre
 ### Rebuild the zip
 
 ```bash
-cd sdk && rm -f dist/lsn_capture_sdk-1.0.1.zip && zip -rq dist/lsn_capture_sdk-1.0.1.zip lsn_capture_sdk -x '*/build/*' '*/.dart_tool/*' '*.iml' '*/.idea/*' '*/.gradle/*' '*/local.properties'
+cd sdk && rm -f dist/lsn_capture_sdk-1.6.3.zip && zip -rq dist/lsn_capture_sdk-1.6.3.zip lsn_capture_sdk -x '*/build/*' '*/.dart_tool/*' '*.iml' '*/.idea/*' '*/.gradle/*' '*/local.properties'
 ```

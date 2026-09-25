@@ -17,7 +17,8 @@ class ChecksTest {
     @Test fun closeSelfieShowingChestPasses() = assertNull(liveProblem(listOf(good(width = 0.5f, left = 0.25f, top = 0.12f)), luma = 120f))
     @Test fun noFace() = assertEquals("Look at the camera", liveProblem(emptyList(), luma = 120f))
     @Test fun twoFaces() = assertEquals("Only one person in the frame", liveProblem(listOf(good(), good(left = 0.05f)), luma = 120f))
-    @Test fun tooDarkFirst() = assertTrue(liveProblem(listOf(good()), luma = 30f)!!.startsWith("Too dark"))
+    @Test fun tooDarkFirst() = assertTrue(liveProblem(listOf(good()), luma = 10f)!!.startsWith("Too dark"))
+    @Test fun dimButVisibleFaceCanCapture() = assertNull(liveProblem(listOf(good()), luma = 30f))
     @Test fun tooFar() = assertEquals("Come a little closer", liveProblem(listOf(good(width = 0.1f)), luma = 120f))
     @Test fun tooClose() = assertTrue(liveProblem(listOf(good(width = 0.7f, left = 0.15f)), luma = 120f)!!.startsWith("Move the phone"))
     @Test fun offCentre() = assertEquals("Move your face to the centre", liveProblem(listOf(good(left = 0.02f)), luma = 120f))
@@ -57,4 +58,8 @@ class ChecksTest {
         assertEquals(ChallengeType.NONE, ChallengeType.from("none"))
         assertEquals(ChallengeType.TURN, ChallengeType.from("random") { false })
     }
+
+    @Test fun litFaceDarkRoomPasses() = assertNull(liveProblem(listOf(good()), luma = 80f, shirtLuma = 70f))
+    @Test fun darkShirtOnlyWarns() = assertNull(liveProblem(listOf(good()), luma = 90f, shirtLuma = 20f))
+    @Test fun nearlyBlackFaceBlocks() = assertTrue(liveProblem(listOf(good()), luma = 8f, shirtLuma = 20f)!!.startsWith("Too dark"))
 }

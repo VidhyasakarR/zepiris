@@ -16,6 +16,25 @@ enum LsnChallenge {
   String get wire => name;
 }
 
+/// Photo size and JPEG quality. The server takes images up to 5 MB; the SDK
+/// lowers the JPEG quality only if a photo would pass 4.5 MB.
+enum LsnPhotoQuality {
+  /// 1920 px long side, JPEG 90: ~0.5-0.8 MB, fastest upload.
+  standard(1920, 90),
+
+  /// 2592 px (5 MP), JPEG 92: ~1-1.8 MB. The default.
+  high(2592, 92),
+
+  /// The camera's full resolution, JPEG 95: ~2-4.5 MB, slowest upload.
+  max(0, 95);
+
+  const LsnPhotoQuality(this.maxSide, this.jpegQuality);
+
+  /// Long side in px (0 = the camera's full resolution).
+  final int maxSide;
+  final int jpegQuality;
+}
+
 /// What the host app asks the capture flow to do.
 class LsnCaptureConfig {
   LsnCaptureConfig({
@@ -30,6 +49,9 @@ class LsnCaptureConfig {
     this.httpClient,
     this.qualityTimeout = const Duration(seconds: 8),
     this.scoreTimeout = const Duration(seconds: 40),
+    this.screenLight = false,
+    this.photoQuality = LsnPhotoQuality.high,
+    this.brightness = 0,
   }) : apiBase = apiBase.trim().replaceAll(RegExp(r'/+$'), '') {
     final uri = Uri.tryParse(this.apiBase);
     if (uri == null ||
@@ -40,7 +62,10 @@ class LsnCaptureConfig {
     final unknown = checks.where((c) => !kLsnChecks.contains(c)).toList();
     if (checks.isEmpty || unknown.isNotEmpty) {
       throw ArgumentError.value(
-          checks, 'checks', 'must be a non-empty subset of $kLsnChecks');
+        checks,
+        'checks',
+        'must be a non-empty subset of $kLsnChecks',
+      );
     }
     if (submit &&
         checks.contains('face_match') &&
@@ -68,6 +93,19 @@ class LsnCaptureConfig {
   /// Run the server's photo quality check (blur, light, T-shirt in view) first,
   /// and let the rider retake on a warning. Advisory: never blocks a capture.
   final bool qualityCheck;
+
+  /// Start with the screen light (💡) on: the camera picture shrinks and the
+  /// white around it, at full brightness, lights the face in a dark place. The
+  /// rider can switch it on or off on the camera screen either way.
+  final bool screenLight;
+
+  /// Starting camera brightness, in exposure-compensation stops (EV, -2 .. +2;
+  /// 0 = the camera's own). It brightens the preview and the photo itself; the
+  /// rider can still adjust it with − / + on the camera screen.
+  final double brightness;
+
+  /// Photo size / JPEG quality ([LsnPhotoQuality.high] by default).
+  final LsnPhotoQuality photoQuality;
 
   /// Extra request headers (e.g. an auth token for your gateway).
   final Map<String, String> headers;
@@ -140,20 +178,20 @@ class LsnCaptureResult {
   /// Null only when [LsnCaptureConfig.submit] is false.
   final LsnScores? scores;
 
-  /// On-device timings: firstDetectionMs, detectMsAvg, captureMs, frames, flashed.
+  /// On-device timings: firstDetectionMs, detectMsAvg, captureMs, frames, light.
   final Map<String, dynamic> stats;
 
   String? get requestId => scores?.requestId;
 
   /// Everything except the photo, e.g. to log or to send to your backend.
   Map<String, dynamic> toJson() => {
-        'challenge': challenge,
-        'challengePassed': challengePassed,
-        'quality': quality,
-        'scores': scores?.json,
-        'stats': stats,
-        'photoBytes': photoJpeg.length,
-      };
+    'challenge': challenge,
+    'challengePassed': challengePassed,
+    'quality': quality,
+    'scores': scores?.json,
+    'stats': stats,
+    'photoBytes': photoJpeg.length,
+  };
 }
 
 class LsnApiError implements Exception {
@@ -167,32 +205,40 @@ class LsnApiError implements Exception {
 /// The two backend calls the flow makes.
 class CheckpointApi {
   CheckpointApi(this.config)
-      : _http = config.httpClient ?? http.Client(),
-        _ownsClient = config.httpClient == null;
+    : _http = config.httpClient ?? http.Client(),
+      _ownsClient = config.httpClient == null;
   final LsnCaptureConfig config;
   final http.Client _http;
   final bool _ownsClient;
 
   Map<String, String> get _headers => {
-        'Content-Type': 'application/json',
-        'User-Agent': 'LSNCaptureSDK/1.1',
-        ...config.headers,
-      };
+    'Content-Type': 'application/json',
+    'User-Agent': 'LSNCaptureSDK/1.1',
+    ...config.headers,
+  };
 
   Future<Map<String, dynamic>> _post(
-      String path, Map<String, dynamic> body, Duration timeout) async {
+    String path,
+    Map<String, dynamic> body,
+    Duration timeout,
+  ) async {
     final http.Response r;
     try {
       r = await _http
-          .post(Uri.parse('${config.apiBase}$path'),
-              headers: _headers, body: jsonEncode(body))
+          .post(
+            Uri.parse('${config.apiBase}$path'),
+            headers: _headers,
+            body: jsonEncode(body),
+          )
           .timeout(timeout);
     } on TimeoutException {
       throw LsnApiError(
-          'The server took too long. Check the connection and try again.');
+        'The server took too long. Check the connection and try again.',
+      );
     } catch (_) {
       throw LsnApiError(
-          'Could not reach the server. Check the connection and try again.');
+        'Could not reach the server. Check the connection and try again.',
+      );
     }
     Object? d;
     try {
@@ -213,8 +259,9 @@ class CheckpointApi {
     if (d is! Map<String, dynamic>) {
       // e.g. a proxy's HTML page: never read that as scores
       throw LsnApiError(
-          'The server sent an unexpected reply (${r.statusCode}).',
-          r.statusCode);
+        'The server sent an unexpected reply (${r.statusCode}).',
+        r.statusCode,
+      );
     }
     return d;
   }
@@ -226,8 +273,9 @@ class CheckpointApi {
   /// Blur / light / T-shirt warnings (null if unreachable: advisory only).
   Future<Map<String, dynamic>?> quality(Uint8List jpeg) async {
     try {
-      return await _post('/v1/quality/check', {'image_b64': base64Encode(jpeg)},
-          config.qualityTimeout);
+      return await _post('/v1/quality/check', {
+        'image_b64': base64Encode(jpeg),
+      }, config.qualityTimeout);
     } catch (_) {
       return null;
     }
@@ -235,17 +283,14 @@ class CheckpointApi {
 
   /// Scores only (no decision) for the photo.
   Future<LsnScores> score(Uint8List jpeg) async {
-    final d = await _post(
-        '/v1/checkpoint/score',
-        {
-          'face_check_b64': base64Encode(jpeg),
-          'checks': config.checks,
-          if ((config.sourceSelfieS3 ?? '').isNotEmpty)
-            'source_selfie_s3': config.sourceSelfieS3,
-          if ((config.sourceSelfieB64 ?? '').isNotEmpty)
-            'source_selfie_b64': config.sourceSelfieB64,
-        },
-        config.scoreTimeout);
+    final d = await _post('/v1/checkpoint/score', {
+      'face_check_b64': base64Encode(jpeg),
+      'checks': config.checks,
+      if ((config.sourceSelfieS3 ?? '').isNotEmpty)
+        'source_selfie_s3': config.sourceSelfieS3,
+      if ((config.sourceSelfieB64 ?? '').isNotEmpty)
+        'source_selfie_b64': config.sourceSelfieB64,
+    }, config.scoreTimeout);
     if (d['scores'] is! Map) throw LsnApiError('The server sent no scores.');
     return LsnScores(d);
   }

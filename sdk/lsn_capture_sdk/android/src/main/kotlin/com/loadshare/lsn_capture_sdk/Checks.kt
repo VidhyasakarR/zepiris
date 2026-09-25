@@ -50,7 +50,11 @@ object Limits {
     const val MAX_PITCH = 14f
     const val MAX_ROLL = 15f
     const val EYES_OPEN = 0.35f          // lower with glasses / dim light; blinks are judged relatively
-    const val TOO_DARK = 45f
+    // Darkness only BLOCKS when the picture is nearly black. Anything the face
+    // detector can find is capturable: dim light is a warning ("Low light —
+    // tap 💡"), and the server's quality check has the final word.
+    const val TOO_DARK = 15f              // face luma (0-255): below this nothing can be made out
+    const val SHIRT_TOO_DARK = 35f        // T-shirt luma (75th pct): warning only
     const val LOW_LIGHT = 90f
     const val TOO_BRIGHT = 225f
     const val STILL = 0.03f               // face centre travel over ~0.4 s, fraction of the frame
@@ -68,6 +72,7 @@ fun shirtVisible(f: FaceSample): Float {
 fun liveProblem(
     faces: List<FaceSample>,
     luma: Float? = null,
+    shirtLuma: Float? = null,
     movement: Float = 0f,
     turning: Boolean = false,
     blinking: Boolean = false,
