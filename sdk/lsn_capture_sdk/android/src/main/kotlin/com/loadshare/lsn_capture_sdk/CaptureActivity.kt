@@ -146,6 +146,11 @@ class CaptureActivity : ComponentActivity() {
         preview = PreviewView(this).apply {
             scaleType = PreviewView.ScaleType.FIT_CENTER // show the whole 4:3 frame = the photo
             implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+            // PreviewView mirrors the front camera like a mirror; flip it back so
+            // the rider sees the true scene, the same as the photo that is sent
+            // (T-shirt text reads normally). COMPATIBLE mode (a TextureView) is
+            // what makes this view-level flip work.
+            scaleX = -1f
         }
         root.addView(preview, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         guide = GuideView(this)
@@ -373,11 +378,14 @@ class CaptureActivity : ComponentActivity() {
                 object : ImageCapture.OnImageSavedCallback {
                     override fun onImageSaved(output: ImageCapture.OutputFileResults) {
                         flash.visibility = View.GONE
-                        val stats = "{\"challenge\":\"${challenge.type.name.lowercase()}\",\"challengePassed\":${challenge.done}," +
-                            "\"flashed\":$useFlash,\"firstDetectionMs\":$firstDetectionMs,\"captureMs\":${SystemClock.elapsedRealtime() - t0}," +
-                            "\"detectMsAvg\":${if (frames > 0) detectMsTotal / frames else -1},\"frames\":$frames}"
-                        setResult(RESULT_OK, Intent().putExtra(RESULT_PATH, file.absolutePath).putExtra(RESULT_JSON, stats))
-                        finish()
+                        // CameraX saves the sensor's pixels plus an EXIF rotation tag
+                        // (sideways on most front cameras). Bake the rotation into the
+                        // pixels, off the main thread, so every viewer and the server see
+                        // the same upright photo without relying on EXIF handling.
+                        analysisExecutor.execute {
+                            val ok = try { uprightJpeg(file) } catch (e: Exception) { Log.w(TAG, "upright failed", e); false }
+                            runOnUiThread { deliver(file, t0, useFlash, ok) }
+                        }
                     }
 
                     override fun onError(e: ImageCaptureException) {
@@ -395,6 +403,43 @@ class CaptureActivity : ComponentActivity() {
         } else {
             shoot()
         }
+    }
+
+    private fun deliver(file: File, t0: Long, useFlash: Boolean, upright: Boolean) {
+                        val stats = "{\"challenge\":\"${challenge.type.name.lowercase()}\",\"challengePassed\":${challenge.done}," +
+                            "\"flashed\":$useFlash,\"firstDetectionMs\":$firstDetectionMs,\"captureMs\":${SystemClock.elapsedRealtime() - t0}," +
+                            "\"detectMsAvg\":${if (frames > 0) detectMsTotal / frames else -1},\"frames\":$frames,\"upright\":$upright}"
+        setResult(RESULT_OK, Intent().putExtra(RESULT_PATH, file.absolutePath).putExtra(RESULT_JSON, stats))
+        finish()
+    }
+
+    /**
+     * Rewrite [file] with its EXIF orientation applied to the pixels (and the
+     * tag reset). The photo stays the true scene, not mirrored: text on the
+     * T-shirt reads normally, which the logo check relies on. Returns true when
+     * the file is upright afterwards.
+     */
+    private fun uprightJpeg(file: File): Boolean {
+        val exif = androidx.exifinterface.media.ExifInterface(file.absolutePath)
+        val o = exif.getAttributeInt(androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION, androidx.exifinterface.media.ExifInterface.ORIENTATION_NORMAL)
+        val m = android.graphics.Matrix()
+        when (o) {
+            androidx.exifinterface.media.ExifInterface.ORIENTATION_NORMAL, androidx.exifinterface.media.ExifInterface.ORIENTATION_UNDEFINED -> return true
+            androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_90 -> m.postRotate(90f)
+            androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_180 -> m.postRotate(180f)
+            androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_270 -> m.postRotate(270f)
+            androidx.exifinterface.media.ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> m.postScale(-1f, 1f)
+            androidx.exifinterface.media.ExifInterface.ORIENTATION_FLIP_VERTICAL -> m.postScale(1f, -1f)
+            androidx.exifinterface.media.ExifInterface.ORIENTATION_TRANSPOSE -> { m.postRotate(90f); m.postScale(-1f, 1f) }
+            androidx.exifinterface.media.ExifInterface.ORIENTATION_TRANSVERSE -> { m.postRotate(270f); m.postScale(-1f, 1f) }
+            else -> return true
+        }
+        val src = android.graphics.BitmapFactory.decodeFile(file.absolutePath) ?: return false
+        val out = android.graphics.Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
+        if (out !== src) src.recycle()
+        java.io.FileOutputStream(file).use { out.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it) }
+        out.recycle()
+        return true // a fresh JPEG carries no orientation tag
     }
 
     private fun cancel() {

@@ -1,3 +1,8 @@
+## 1.0.1
+
+- Photos are upright: the camera's EXIF rotation is baked into the pixels right after capture, so the review screen and the server see the same image without relying on EXIF handling.
+- No mirroring anywhere: the live preview shows the true scene (Android mirrors the front camera by default), matching the photo that is sent, so T-shirt text reads normally.
+
 ## 1.1.0
 
 - **Scores only.** The SDK calls `/v1/checkpoint/score` and returns `LsnCaptureResult.scores` (`LsnScores`: typed getters plus the raw `json`). There is no pass / fail anywhere; the host's backend decides. `isCleared` and the result screen are removed.

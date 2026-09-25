@@ -185,6 +185,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
           fit: StackFit.expand,
           children: [
             if (_photo != null)
+              // The true scene, not mirrored, exactly as sent to the server
+              // (the live preview is unmirrored too, so the two match).
               Center(
                   child: Image.memory(_photo!,
                       fit: BoxFit.contain, gaplessPlayback: true))

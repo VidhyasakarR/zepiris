@@ -81,6 +81,7 @@ dependencies {
     implementation("androidx.camera:camera-view:$cameraxVersion")
     implementation("androidx.activity:activity-ktx:1.9.3")
     implementation("androidx.core:core-ktx:1.13.1") // window insets (edge-to-edge)
+    implementation("androidx.exifinterface:exifinterface:1.3.7") // upright photos (already pulled in by CameraX)
     implementation("com.google.android.gms:play-services-mlkit-face-detection:17.1.0")
     testImplementation("org.jetbrains.kotlin:kotlin-test")
     testImplementation("junit:junit:4.13.2")
