@@ -231,3 +231,13 @@ class LoadshareTextDetector:
             if again.score > best.score or (best.text is None and again.text):
                 best = again
         return best
+
+
+class UnavailableLogoReader:
+    """Stands in when the OCR engine cannot load: every logo fails, visibly.
+
+    Never falls back to the learned logo head, which passes any chest print.
+    """
+
+    def detect(self, image_rgb: np.ndarray, face_bbox: list[float] | None) -> LogoTextResult:
+        return LogoTextResult(score=0.0, reason="ocr_unavailable")

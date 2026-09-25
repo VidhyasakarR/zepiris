@@ -136,3 +136,10 @@ def test_cut_off_wordmark_at_frame_edge_passes() -> None:
 def test_three_letters_mid_shirt_do_not_pass() -> None:
     r = LoadshareTextDetector(ocr=_FakeOCR([(VERTICAL_MID, "ARE", 0.9)], [], [])).detect(_chest_only(), None)
     assert r.score == 0
+
+
+def test_missing_ocr_fails_closed() -> None:
+    from zepiris.ml_inference.logo_text import UnavailableLogoReader
+
+    r = UnavailableLogoReader().detect(np.zeros((10, 10, 3), np.uint8), None)
+    assert r.score == 0 and r.reason == "ocr_unavailable"

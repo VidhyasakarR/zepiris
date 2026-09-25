@@ -430,7 +430,15 @@ async def lifespan(app: FastAPI):
                 logo_reader = LoadshareTextDetector()
                 logger.info("Dress code: logo decided by OCR (LOADSHARE on blue)")
             except Exception:
-                logger.exception("Logo OCR unavailable (pip install rapidocr_onnxruntime); using the logo head")
+                # Fail closed: the learned logo head passes any chest print (a
+                # marathon tee scored 0.84), so it must never silently decide the
+                # logo. Every logo reads 0 with reason "ocr_unavailable" until the
+                # OCR engine is installed (see the Dockerfile).
+                from zepiris.ml_inference.logo_text import UnavailableLogoReader
+
+                logo_reader = UnavailableLogoReader()
+                logger.exception("Logo OCR unavailable (pip install --no-deps rapidocr_onnxruntime): "
+                                 "every logo check will FAIL with reason ocr_unavailable")
         try:
             app.state.dresscode_service = DresscodeDetectionService(
                 app.state.face_embedding_service,
