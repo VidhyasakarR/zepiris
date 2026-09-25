@@ -15,7 +15,8 @@ class DresscodeMatchRequest(BaseModel):
 
     image_b64: str | None = None
     image_s3: str | None = None
-    threshold: float | None = None
+    # bounded + finite: a negative or NaN threshold would pass anything
+    threshold: float | None = Field(None, ge=0.05, le=0.99, allow_inf_nan=False)
 
 
 class DresscodeScores(BaseModel):
@@ -52,6 +53,10 @@ class DresscodeMatchResponse(BaseModel):
     threshold: float
     #: "siglip2" — the learned classifier decided; "hsv" — the colour/logo rule.
     engine: str = "hsv"
+    #: Per-check model probabilities ("dress_color", "logo") and their
+    #: calibrated thresholds; empty when the learned model is not loaded.
+    check_scores: dict[str, float] = Field(default_factory=dict, alias="checkScores")
+    check_thresholds: dict[str, float] = Field(default_factory=dict, alias="checkThresholds")
     scores: DresscodeScores
     face_detected: bool = Field(..., alias="faceDetected")
     #: "torso" (face-anchored) or "fallback_full_image" (no face found).

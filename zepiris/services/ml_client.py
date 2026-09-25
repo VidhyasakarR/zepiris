@@ -29,6 +29,7 @@ import httpx
 from zepiris.framing import encode_pair_frame
 from zepiris.schemas.ml_inference import (
     BlurDetectionResult,
+    CaptureQualityResult,
     DresscodeCheckResult,
     FaceDetectionResult,
     FaceEmbeddingResult,
@@ -270,6 +271,15 @@ class AsyncMLInferenceClient:
         )
         response.raise_for_status()
         return SpoofDetectionResult(**response.json())
+
+    async def check_quality(self, image: bytes) -> CaptureQualityResult:
+        """Grade face and T-shirt visibility / clarity of one captured selfie."""
+        response = await self.client.post(
+            "/v1/quality/check",
+            json={"image_b64": base64.b64encode(image).decode("ascii")},
+        )
+        response.raise_for_status()
+        return CaptureQualityResult(**response.json())
 
     async def check_dresscode(self, image: bytes) -> DresscodeCheckResult:
         """Score one image for the blue Loadshare uniform shirt.

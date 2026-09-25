@@ -20,6 +20,7 @@ from fastapi import FastAPI
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from zepiris.ml_inference.blur_detection import BlurDetectionService
+from zepiris.ml_inference.capture_quality import CaptureQualityService
 from zepiris.ml_inference.concurrency import InferenceLimiter
 from zepiris.ml_inference.dresscode_detection import DresscodeDetectionService
 from zepiris.ml_inference.uniform_classifier import DEFAULT_HEAD_PATH, UniformClassifier
@@ -105,6 +106,10 @@ class MLServiceSettings(BaseSettings):
     blur_hf_model_file: str = "blur_model.pth"
     blur_local_model_path: str = "/app/models/blur_model.pth"
     blur_threshold: float = 0.5
+    # Capture quality check (/v1/quality/check): loads the blur model even in
+    # face_match_only mode, to tell a rider right after capture that the face or
+    # T-shirt is blurry / not visible, before the checkpoint runs.
+    quality_check_enabled: bool = True
 
     # -- dress-code (uniform) detection --------------------------------------
     # Loadshare-blue HSV band, OpenCV scale (H 0-179, S/V 0-255). Calibrated
@@ -489,7 +494,8 @@ async def lifespan(app: FastAPI):
             app.state.spoof_service = None
             failed.append("spoof")
 
-    if not s.face_match_only:
+    # Blur loads for full IQA, or on its own for the capture quality check.
+    if not s.face_match_only or s.quality_check_enabled:
         try:
             app.state.blur_service = BlurDetectionService(
                 huggingface_repo_id=s.blur_hf_repo_id,
@@ -504,6 +510,10 @@ async def lifespan(app: FastAPI):
             logger.exception("Failed to load BlurDetectionService")
             app.state.blur_service = None
             failed.append("blur")
+
+    app.state.quality_service = None
+    if s.quality_check_enabled and app.state.face_embedding_service is not None and app.state.blur_service is not None:
+        app.state.quality_service = CaptureQualityService(app.state.face_embedding_service, app.state.blur_service)
 
     nsfw = app.state.nsfw_service
     spoof = app.state.spoof_service

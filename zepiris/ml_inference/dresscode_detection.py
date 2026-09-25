@@ -266,9 +266,10 @@ class DresscodeDetectionService:
             # The learned model scores the whole frame plus its own torso crop,
             # so a small colour ROI does not stop it; the colour/logo terms are
             # still computed where possible and reported alongside.
-            uniform = self._classifier.score(
+            probs = self._classifier.score_all(
                 image_rgb, detection.bbox if detection.face_detected else None
             )
+            uniform = probs["uniform"]
             return DresscodeCheckResult(
                 face_detected=detection.face_detected,
                 region=region,
@@ -278,6 +279,10 @@ class DresscodeDetectionService:
                 uniform_score=uniform,
                 engine="siglip2",
                 recommended_threshold=self._classifier.threshold,
+                check_scores={k: v for k, v in probs.items() if k != "uniform"},
+                check_thresholds={
+                    k: v for k, v in self._classifier.thresholds().items() if k != "uniform"
+                },
                 reason=None,
             )
 

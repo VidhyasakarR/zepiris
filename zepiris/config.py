@@ -42,6 +42,17 @@ class Settings(BaseSettings):
     # ML_SERVICE_LIVENESS_ENABLED on the ML service, or every call returns 503.
     # Off by default: facematch stays a pure 1:1 match.
     liveness_enabled: bool = False
+    # Per-request pass-mark overrides (threshold, dress_color_threshold,
+    # logo_threshold) on /v1/checkpoint/verify and the rider page. OFF by
+    # default: that endpoint is called from rider devices, and a client-chosen
+    # threshold of -1 would clear anyone. Turn on only for trusted testing.
+    allow_threshold_override: bool = False
+    # Image URLs (face_check_s3 / source_selfie_s3 / image_s3) come from rider
+    # devices: refuse ones that point into the private network (the ML service,
+    # cloud metadata at 169.254.169.254, ...). Comma list of allowed hosts, exact
+    # or ".suffix" (e.g. ".amazonaws.com"); empty = any public host.
+    image_url_block_private: bool = True
+    image_url_allowed_hosts: str = ""
     reference_fetch_timeout_seconds: float = 10.0
     # CPU embedding (antelopev2/ResNet100) plus the multi-pass detection cascade
     # can take well over httpx's 5s default on hard document images.

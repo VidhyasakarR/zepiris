@@ -7,8 +7,10 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/ui/static/guide.css">
 <style>
   :root {
+    --stage-max-h: 76vh;
     --bg: #eef1f6; --panel: #ffffff; --ink: #0d1526; --muted: #5b6579; --line: #d5dbe6;
     --brand: #1f5fd6; --brand-soft: #e3ecfd;
     --pass: #0f8a5f; --pass-soft: #dcf3ea; --fail: #c43b2f; --fail-soft: #fbe3e0;
@@ -73,33 +75,6 @@
   .ph { font: 12px var(--mono); color: var(--muted); text-align: center; padding: 18px; }
   .hint { font: 11.5px var(--mono); color: var(--muted); margin-top: 8px; }
 
-  /* ---- guided capture stage ------------------------------------------- */
-  .stage { position: relative; aspect-ratio: 3 / 4; max-height: 76vh; margin: 0 auto; border-radius: 14px; overflow: hidden; background: #05080f; }
-  .stage video, .stage > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-  .stage video, #skeleton { transform: scaleX(-1); }   /* mirror like a mirror; the captured frame is not */
-  .stage svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-  .guide-dim { fill: rgba(5, 8, 15, .55); }
-  .guide-line { fill: none; stroke: rgba(255,255,255,.85); stroke-width: .6; stroke-dasharray: 2 1.4; transition: stroke .25s; }
-  .stage.aligned .guide-line { stroke: #3ccf95; stroke-dasharray: none; stroke-width: .9; }
-  .stage.aligned .guide-dim { fill: rgba(5, 25, 15, .45); }
-  .guide-label { font: 600 2.3px var(--mono); fill: rgba(255,255,255,.75); letter-spacing: .15px; text-anchor: middle; }
-  #skeleton line { stroke: #8fb4ff; stroke-width: .55; stroke-linecap: round; }
-  #skeleton circle { fill: #fff; stroke: #1f5fd6; stroke-width: .35; }
-  .stage.aligned #skeleton line { stroke: #3ccf95; }
-  .banner {
-    position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); max-width: calc(100% - 28px);
-    font: 600 13px var(--mono); color: #fff; background: rgba(5,8,15,.72); padding: 8px 14px; border-radius: 999px;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; backdrop-filter: blur(6px);
-  }
-  .stage.aligned .banner { background: rgba(15, 138, 95, .9); }
-  .count { position: absolute; inset: 0; display: grid; place-items: center; font: 800 110px var(--display); color: #fff; text-shadow: 0 6px 30px rgba(0,0,0,.5); pointer-events: none; }
-  .flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
-  .flash.go { animation: flash .45s ease-out; }
-  @keyframes flash { from { opacity: .85; } to { opacity: 0; } }
-  .stage.scanning::after { content: ""; position: absolute; left: 0; right: 0; height: 3px; background: var(--brand); box-shadow: 0 0 18px 4px var(--brand); animation: scan 1.1s ease-in-out infinite alternate; }
-  @keyframes scan { from { top: 4%; } to { top: 94%; } }
-  .idle { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; color: #c9d3e6; font: 13px var(--mono); padding: 30px; }
-
   .row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
   .row.center { justify-content: center; }
   button, .filebtn {
@@ -115,6 +90,9 @@
   .pose-state { font: 11.5px var(--mono); color: var(--muted); text-align: center; margin-top: 8px; }
 
   /* ---- results ---------------------------------------------------------- */
+  .checks { display: flex; gap: 14px; flex-wrap: wrap; font: 13px var(--mono); color: var(--ink); margin-bottom: 10px; }
+  .checks label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+  .metric.off { opacity: .45; }
   .go { width: 100%; padding: 14px; font-size: 16px; font-weight: 800; margin-bottom: 14px; }
   .overall { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 12px; font-weight: 800; font-size: 17px; margin-bottom: 12px; background: var(--bg); color: var(--muted); }
   .overall.pass { background: var(--pass-soft); color: var(--pass); }
@@ -181,35 +159,11 @@
       </div>
 
       <div data-pane="sel-camera">
-        <div class="stage" id="stage">
-          <div class="idle" id="idle">Start the camera, then fit your face in the oval<br>and your T-shirt down to the stomach in the outline.</div>
-          <!-- silhouette guide: viewBox is 0-100 x 0-133.3 (3:4) -->
-          <svg viewBox="0 0 100 133.33" preserveAspectRatio="none" aria-hidden="true" id="guide">
-            <defs>
-              <mask id="cut">
-                <rect width="100" height="133.33" fill="#fff"/>
-                <ellipse cx="50" cy="40" rx="15" ry="19" fill="#000"/>
-                <path id="torsoPath" d="M50 58 C 44 60 42 64 40 66 C 30 68 18 71 14 79 C 11 87 10 104 10 133.33 L 90 133.33 C 90 104 89 87 86 79 C 82 71 70 68 60 66 C 58 64 56 60 50 58 Z" fill="#000"/>
-              </mask>
-            </defs>
-            <rect class="guide-dim" width="100" height="133.33" mask="url(#cut)"/>
-            <ellipse class="guide-line" cx="50" cy="40" rx="15" ry="19"/>
-            <path class="guide-line" d="M40 66 C 30 68 18 71 14 79 C 11 87 10 104 10 133.33 M60 66 C 70 68 82 71 86 79 C 89 87 90 104 90 133.33"/>
-            <line class="guide-line" x1="16" y1="124" x2="84" y2="124" opacity=".6"/>
-            <text class="guide-label" x="50" y="17">FACE IN OVAL</text>
-            <text class="guide-label" x="50" y="100">T-SHIRT + LOGO</text>
-            <text class="guide-label" x="50" y="130">STOMACH LINE</text>
-          </svg>
-          <svg viewBox="0 0 100 133.33" preserveAspectRatio="none" id="skeleton" aria-hidden="true"></svg>
-          <div class="count" id="count"></div>
-          <div class="flash" id="flash"></div>
-          <div class="banner" id="banner">Camera off</div>
-        </div>
+        <div class="stage" id="stage"></div>
         <div class="row center">
           <button id="camBtn" class="primary">Start camera</button>
           <button id="snapBtn" disabled>Capture now</button>
           <button id="retakeBtn" hidden>Retake</button>
-          <label class="toggle"><input type="checkbox" id="autoCap" checked> auto-capture when aligned</label>
         </div>
         <div class="pose-state" id="poseState">Pose guide: loads with the camera</div>
       </div>
@@ -228,7 +182,17 @@
     <section class="card">
       <div class="step">Step 03</div>
       <h2>Results</h2>
+      <div class="checks" id="checks">
+        <label><input type="checkbox" value="face_match" checked> Face match</label>
+        <label><input type="checkbox" value="dress_color" checked> Dress colour</label>
+        <label><input type="checkbox" value="logo" checked> Logo</label>
+      </div>
       <button class="primary go" id="runBtn" disabled>Run checkpoint</button>
+      <div class="checks"><label>Rider camera zoom
+        <select id="zoomSel"><option value="0.75" selected>0.75×</option><option value="0.8">0.8×</option><option value="0.9">0.9×</option><option value="1">1×</option></select></label>
+        <label>Liveness challenge
+        <select id="challengeSel"><option value="blink" selected>Blink</option><option value="turn">Turn head</option><option value="random">Random</option><option value="none">None</option></select></label></div>
+      <button class="go" id="selfieBtn" type="button" title="Opens /ui/selfie with these checks and this source in the request body">Open rider selfie page ↗</button>
       <div class="overall" id="overall"><span class="dot"></span><span id="overallText">Waiting for source and selfie</span></div>
 
       <div class="metric">
@@ -238,21 +202,15 @@
         <dl class="kv" id="faceKv"></dl>
       </div>
       <div class="metric">
-        <div class="metric-head"><span class="metric-title">Uniform match <small style="color:var(--muted);font-weight:500">trained model</small></span><span class="badge" id="uniformBadge">—</span></div>
-        <div class="val" id="uniformVal">—</div>
-        <div class="bar"><i id="uniformBar"></i><b id="uniformTh"></b></div>
-        <dl class="kv" id="uniformKv"></dl>
-      </div>
-      <div class="metric">
-        <div class="metric-head"><span class="metric-title">Dress colour match</span><span class="badge" id="colourBadge">—</span></div>
+        <div class="metric-head"><span class="metric-title">Dress colour match <small style="color:var(--muted);font-weight:500">trained model</small></span><span class="badge" id="colourBadge">—</span></div>
         <div class="val" id="colourVal">—</div>
-        <div class="bar"><i id="colourBar"></i></div>
+        <div class="bar"><i id="colourBar"></i><b id="colourTh"></b></div>
         <dl class="kv" id="colourKv"></dl>
       </div>
       <div class="metric">
-        <div class="metric-head"><span class="metric-title">Logo match</span><span class="badge" id="logoBadge">—</span></div>
+        <div class="metric-head"><span class="metric-title">Logo match <small style="color:var(--muted);font-weight:500">trained model</small></span><span class="badge" id="logoBadge">—</span></div>
         <div class="val" id="logoVal">—</div>
-        <div class="bar"><i id="logoBar"></i></div>
+        <div class="bar"><i id="logoBar"></i><b id="logoTh"></b></div>
         <dl class="kv" id="dressKv"></dl>
       </div>
       <div class="err" id="err"></div>
@@ -263,13 +221,14 @@
 </div>
 
 <script type="module">
+import { createCapture, serverQuality } from "/ui/static/guide.js";
 const $ = (id) => document.getElementById(id);
 const MAX_SIDE = 1600;       // API caps images at 5 MB; the models never need more
-const HOLD_MS = 900;         // aligned this long before the countdown starts
-const COUNTDOWN = 3;
 
-const state = { srcMode: "image", selMode: "camera", srcB64: null, selB64: null };
-let stream = null, video = null, landmarker = null, rafId = 0, alignedSince = 0, counting = false;
+// camera shot and uploaded selfie are kept apart, so switching tabs never sends the other one
+const state = { srcMode: "image", selMode: "camera", srcB64: null, selCam: null, selUp: null };
+const selB64 = () => (state.selMode === "camera" ? state.selCam : state.selUp);
+const esc = (v) => String(v).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
 
 // ---- API base (remembered per browser) --------------------------------
 try { $("api").value = localStorage.getItem("zepiris.api") || ""; } catch (_) {}
@@ -302,172 +261,91 @@ function fileToJpeg(file) {
   return new Promise((res, rej) => {
     const img = new Image();
     img.onload = () => { res(toJpeg(img, img.naturalWidth, img.naturalHeight)); URL.revokeObjectURL(img.src); };
-    img.onerror = () => rej(new Error("Could not read that image"));
+    img.onerror = () => { URL.revokeObjectURL(img.src); rej(new Error(/heic|heif/i.test(file.type + file.name)
+      ? "HEIC photos can't be read by this browser — export it as JPEG, or use the camera"
+      : "Could not read that image — use a JPEG, PNG or WebP")); };
     img.src = URL.createObjectURL(file);
   });
 }
 function showThumb(id, url) { $(id).innerHTML = ""; const i = new Image(); i.src = url; i.alt = ""; $(id).append(i); }
-$("srcFile").addEventListener("change", async (e) => { const f = e.target.files[0]; if (!f) return; state.srcB64 = await fileToJpeg(f); showThumb("srcThumb", state.srcB64); ready(); });
-$("selFile").addEventListener("change", async (e) => { const f = e.target.files[0]; if (!f) return; state.selB64 = await fileToJpeg(f); showThumb("selThumb", state.selB64); ready(); });
+async function onFile(e, key, thumb) {
+  const f = e.target.files[0]; if (!f) return;
+  $("err").textContent = "";
+  try { state[key] = await fileToJpeg(f); showThumb(thumb, state[key]); }
+  catch (err) { state[key] = null; $(thumb).innerHTML = ""; $("err").textContent = err.message; }
+  ready();
+}
+$("srcFile").addEventListener("change", (e) => onFile(e, "srcB64", "srcThumb"));
+$("selFile").addEventListener("change", (e) => onFile(e, "selUp", "selThumb"));
 
 // ---- request body: same shape as /facematch/verify --------------------
+const chosen = () => [...document.querySelectorAll("#checks input:checked")].map((i) => i.value);
 function body() {
-  const b = {};
-  if (state.srcMode === "s3") b.source_selfie_s3 = $("srcS3").value.trim(); else b.source_selfie_b64 = state.srcB64;
-  if (state.selMode === "s3") b.face_check_s3 = $("selS3").value.trim(); else b.face_check_b64 = state.selB64;
+  const b = { checks: chosen() };
+  if (b.checks.includes("face_match")) {
+    if (state.srcMode === "s3") b.source_selfie_s3 = $("srcS3").value.trim(); else b.source_selfie_b64 = state.srcB64;
+  }
+  if (state.selMode === "s3") b.face_check_s3 = $("selS3").value.trim(); else b.face_check_b64 = selB64();
   return b;
 }
+document.querySelectorAll("#checks input").forEach((i) => i.addEventListener("change", ready));
 function ready() {
-  const src = state.srcMode === "s3" ? /^https?:\/\//.test($("srcS3").value.trim()) : !!state.srcB64;
-  const sel = state.selMode === "s3" ? /^https?:\/\//.test($("selS3").value.trim()) : !!state.selB64;
-  $("runBtn").disabled = !(src && sel);
+  const needSrc = chosen().includes("face_match");
+  const src = !needSrc || (state.srcMode === "s3" ? /^https?:\/\//.test($("srcS3").value.trim()) : !!state.srcB64);
+  const sel = state.selMode === "s3" ? /^https?:\/\//.test($("selS3").value.trim()) : !!selB64();
+  $("runBtn").disabled = !(src && sel && chosen().length);
   if (!src || !sel) setOverall("", !src ? "Waiting for the enrolled source" : "Waiting for the live selfie");
 }
 
-// ---- camera + pose guide ----------------------------------------------------
-async function loadPose() {
-  if (landmarker) return landmarker;
-  $("poseState").textContent = "Pose guide: loading model…";
-  try {
-    const v = "0.10.14";
-    const { FilesetResolver, PoseLandmarker } = await import(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${v}/vision_bundle.mjs`);
-    const files = await FilesetResolver.forVisionTasks(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${v}/wasm`);
-    const opts = (delegate) => ({
-      baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task", delegate },
-      runningMode: "VIDEO", numPoses: 1,
-    });
-    try { landmarker = await PoseLandmarker.createFromOptions(files, opts("GPU")); }
-    catch (_) { landmarker = await PoseLandmarker.createFromOptions(files, opts("CPU")); }
-    $("poseState").textContent = "Pose guide: on — align to the outline";
-  } catch (err) {
-    landmarker = null;
-    $("poseState").textContent = "Pose guide unavailable (" + err.message + ") — use Capture now";
+// ---- camera + pose guide (shared with /ui/selfie; see /ui/static/guide.js) --
+// No auto-capture: the outline turns green when aligned, and only then is
+// "Capture now" enabled. The checkpoint API runs only on "Run checkpoint".
+const cam = createCapture($("stage"), {
+  onReady: (ok) => { $("snapBtn").disabled = !ok; },
+  onPoseStatus: (t) => ($("poseState").textContent = t),
+  onState: (st, err) => {
+    if (st === "live") { $("camBtn").textContent = "Stop camera"; $("retakeBtn").hidden = true; state.selCam = null; ready(); }
+    if (st === "captured") { $("camBtn").textContent = "Start camera"; $("retakeBtn").hidden = false; }
+    if (st === "error" && err) $("err").textContent = `Camera unavailable (${err.name}): ${err.message}`;
+  },
+  onCapture: async (dataUrl, q) => {
+    state.selCam = dataUrl; ready();
+    $("poseState").textContent = "Checking the photo…"; $("poseState").style.color = "";
+    const sq = await serverQuality(q.raw || dataUrl, base());
+    if (state.selCam !== dataUrl) return;
+    if (sq) {
+      const f = sq.face, sh = sq.shirt;
+      const facts = `face blur ${f.blur ?? "—"} · brightness ${f.brightness ?? "—"} · T-shirt visible ${sh.visible ?? "—"} · T-shirt blur ${sh.blur ?? "—"}${q.flashed ? " · screen flash" : ""}`;
+      $("poseState").textContent = sq.ok ? `✓ Face and T-shirt clear (${facts})` : `⚠️ ${sq.warnings.map((w) => w.message).join(" ")} (${facts})`;
+      $("poseState").style.color = sq.ok ? "var(--pass)" : "var(--fail)";
+      return;
+    }
+    const facts = [`blur ${q.blur}`, `face brightness ${q.brightness}`, q.flashed ? "screen flash" : "", q.brightened ? "brightened" : ""].filter(Boolean).join(" · ");
+    $("poseState").textContent = q.dark ? `⚠️ Too dark — find more light and retake (${facts})`
+      : q.blurry ? `⚠️ Photo is blurry — retake it, or the checks may fail (${facts})`
+      : q.blur == null ? "" : `Photo OK (${facts})`;
+    $("poseState").style.color = q.dark || q.blurry ? "var(--fail)" : "";
+  },
+});
+function stopCam() { cam.stop(); $("camBtn").textContent = "Start camera"; }
+$("camBtn").addEventListener("click", () => (cam.live ? stopCam() : cam.start()));
+$("retakeBtn").addEventListener("click", () => cam.start());
+$("snapBtn").addEventListener("click", () => cam.capture());
+
+// ---- open the rider page: checks + source travel in a POST body, not the URL --
+$("selfieBtn").addEventListener("click", () => {
+  const f = document.createElement("form");
+  f.method = "POST"; f.action = "/ui/selfie"; f.target = "_blank"; f.hidden = true;
+  const add = (k, v) => { const i = document.createElement("input"); i.type = "hidden"; i.name = k; i.value = v; f.append(i); };
+  add("checks", chosen().join(","));
+  if (chosen().includes("face_match")) {
+    if (state.srcMode === "s3") add("source_selfie_s3", $("srcS3").value.trim());
+    else if (state.srcB64) add("source_selfie_b64", state.srcB64);
   }
-  return landmarker;
-}
-
-async function startCam() {
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 1080 }, height: { ideal: 1440 } }, audio: false });
-  } catch (err) {
-    const insecure = !window.isSecureContext;
-    $("banner").textContent = insecure ? "Camera needs https or localhost"
-      : err.name === "NotAllowedError" ? "Camera permission denied — allow it in the browser"
-      : err.name === "NotFoundError" ? "No camera found — use Upload"
-      : "Camera unavailable — use Upload";
-    $("err").textContent = `Camera unavailable (${err.name}): ${err.message}`; return;
-  }
-  const stage = $("stage");
-  stage.querySelectorAll("video, :scope > img").forEach((n) => n.remove());
-  $("idle").hidden = true;
-  video = document.createElement("video");
-  Object.assign(video, { autoplay: true, playsInline: true, muted: true, srcObject: stream });
-  stage.prepend(video);
-  await new Promise((r) => (video.onloadedmetadata = r));
-  $("camBtn").textContent = "Stop camera"; $("snapBtn").disabled = false; $("retakeBtn").hidden = true;
-  $("banner").textContent = "Fit your face in the oval";
-  state.selB64 = null; ready();
-  loadPose().then(() => { if (stream) loop(); });
-}
-function stopCam() {
-  cancelAnimationFrame(rafId); counting = false; $("count").textContent = "";
-  if (stream) stream.getTracks().forEach((t) => t.stop());
-  stream = null; $("skeleton").innerHTML = ""; $("stage").classList.remove("aligned");
-  $("camBtn").textContent = "Start camera"; $("snapBtn").disabled = true;
-}
-$("camBtn").addEventListener("click", () => (stream ? stopCam() : startCam()));
-$("retakeBtn").addEventListener("click", startCam);
-$("snapBtn").addEventListener("click", capture);
-
-// The <video> is object-fit: cover inside a 3:4 stage; map a normalized
-// landmark (relative to the full camera frame) into the stage's 0-100 box.
-function toStage(p) {
-  const vw = video.videoWidth, vh = video.videoHeight;
-  const stageAR = 3 / 4, frameAR = vw / vh;
-  let x = p.x, y = p.y;
-  if (frameAR > stageAR) { const vis = stageAR / frameAR; x = (x - (1 - vis) / 2) / vis; }
-  else { const vis = frameAR / stageAR; y = (y - (1 - vis) / 2) / vis; }
-  return { x: x * 100, y: y * 133.33, v: p.visibility ?? 1 };
-}
-
-const BONES = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24], [0, 11], [0, 12]];
-const JOINTS = [0, 11, 12, 13, 14, 23, 24];
-function drawSkeleton(pts) {
-  const seen = (i) => pts[i] && pts[i].v > 0.35;
-  let s = "";
-  for (const [a, b] of BONES) if (seen(a) && seen(b)) s += `<line x1="${pts[a].x}" y1="${pts[a].y}" x2="${pts[b].x}" y2="${pts[b].y}"/>`;
-  for (const j of JOINTS) if (seen(j)) s += `<circle cx="${pts[j].x}" cy="${pts[j].y}" r="1.1"/>`;
-  $("skeleton").innerHTML = s;
-}
-
-// Alignment rules, in stage units (0-100 wide, 0-133 tall), calibrated on real
-// half-body rider selfies (nose ~y43, shoulders ~y78, shoulder width ~65):
-// nose in the face oval, shoulders on the shoulder band at a sensible width,
-// and the torso running to the stomach line (hips below it or off frame).
-function assess(pts) {
-  const n = pts[0], ls = pts[11], rs = pts[12], lh = pts[23], rh = pts[24];
-  if (!n || n.v < 0.5) return "Show your face to the camera";
-  const inOval = ((n.x - 50) / 15) ** 2 + ((n.y - 40) / 19) ** 2 <= 1;
-  if (!inOval) return n.y < 21 ? "Lower the phone — face in the oval" : n.y > 59 ? "Raise the phone — face in the oval" : "Centre your face in the oval";
-  if (!ls || !rs || ls.v < 0.5 || rs.v < 0.5) return "Step back — show both shoulders";
-  const shW = Math.abs(ls.x - rs.x), shY = (ls.y + rs.y) / 2;
-  if (shW > 88) return "Step back — too close";
-  if (shW < 42) return "Come closer";
-  if (shY < 64 || shY > 92) return shY < 64 ? "Step back — show the T-shirt" : "Raise the phone a little";
-  const hipY = (lh && rh && lh.v > 0.3 && rh.v > 0.3) ? (lh.y + rh.y) / 2 : 999;
-  if (hipY < 110) return "Step back — show the T-shirt down to the stomach";
-  return null;
-}
-
-let lastTs = -1;
-function loop() {
-  if (!stream || !video) return;
-  rafId = requestAnimationFrame(loop);
-  if (!landmarker || video.readyState < 2 || counting) return;
-  const ts = performance.now(); if (ts - lastTs < 60) return; lastTs = ts;  // ~16 fps is plenty
-  const res = landmarker.detectForVideo(video, ts);
-  const lm = res.landmarks && res.landmarks[0];
-  if (!lm) { drawSkeleton([]); setAligned(false, "Step into the frame"); return; }
-  const pts = lm.map(toStage);
-  drawSkeleton(pts);
-  const problem = assess(pts);
-  setAligned(!problem, problem || "Perfect — hold still");
-  if (!problem) {
-    alignedSince ||= ts;
-    if ($("autoCap").checked && ts - alignedSince > HOLD_MS) countdown();
-  } else alignedSince = 0;
-}
-function setAligned(ok, msg) { $("stage").classList.toggle("aligned", ok); $("banner").textContent = msg; }
-
-async function countdown() {
-  counting = true;
-  for (let i = COUNTDOWN; i > 0; i--) {
-    $("count").textContent = i;
-    await new Promise((r) => setTimeout(r, 700));
-    if (!stream) { counting = false; $("count").textContent = ""; return; }
-  }
-  $("count").textContent = ""; capture();
-}
-
-function capture() {
-  if (!video || !video.videoWidth) return;
-  // Save exactly what the outline framed (the 3:4 stage crop), unmirrored.
-  const vw = video.videoWidth, vh = video.videoHeight, ar = 3 / 4;
-  let sw = vw, sh = vh, sx = 0, sy = 0;
-  if (vw / vh > ar) { sw = vh * ar; sx = (vw - sw) / 2; } else { sh = vw / ar; sy = (vh - sh) / 2; }
-  const scale = Math.min(1, MAX_SIDE / Math.max(sw, sh));
-  const c = document.createElement("canvas");
-  c.width = Math.round(sw * scale); c.height = Math.round(sh * scale);
-  c.getContext("2d").drawImage(video, sx, sy, sw, sh, 0, 0, c.width, c.height);
-  state.selB64 = c.toDataURL("image/jpeg", 0.92);
-  $("flash").classList.remove("go"); void $("flash").offsetWidth; $("flash").classList.add("go");
-  stopCam();
-  const img = new Image(); img.src = state.selB64; img.alt = ""; $("stage").prepend(img);
-  video?.remove(); video = null;
-  $("banner").textContent = "Captured"; $("retakeBtn").hidden = false; counting = false;
-  ready();
-  if (!$("runBtn").disabled) run();
-}
+  add("zoom", $("zoomSel").value);
+  add("challenge", $("challengeSel").value);
+  document.body.append(f); f.submit(); f.remove();
+});
 
 // ---- results ---------------------------------------------------------------
 const fmt = (v, d = 3) => (v === null || v === undefined) ? "—" : Number(v).toFixed(d);
@@ -479,63 +357,57 @@ function bar(id, v, cls, thId, th) {
   $(id).style.background = cls === "pass" ? "var(--pass)" : cls === "fail" ? "var(--fail)" : cls === "warn" ? "var(--warn)" : "var(--brand)";
   if (thId) { $(thId).style.display = th == null ? "none" : "block"; $(thId).style.left = c(th) * 100 + "%"; }
 }
-const kv = (id, rows) => { $(id).innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join(""); };
+const kv = (id, rows) => { $(id).innerHTML = rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join(""); };
 function setOverall(cls, text) { $("overall").className = "overall " + cls; $("overallText").textContent = text; }
 
 function reset() {
-  for (const k of ["face", "uniform", "colour", "logo"]) { $(k + "Val").textContent = "…"; badge(k + "Badge", "", "running"); bar(k + "Bar", 0); }
-  ["faceKv", "uniformKv", "colourKv", "dressKv"].forEach((id) => ($(id).innerHTML = ""));
+  for (const k of ["face", "colour", "logo"]) { $(k + "Val").textContent = "…"; badge(k + "Badge", "", "running"); bar(k + "Bar", 0); }
+  ["faceKv", "colourKv", "dressKv"].forEach((id) => ($(id).innerHTML = ""));
+  document.querySelectorAll(".metric").forEach((m) => m.classList.remove("off"));
   $("err").textContent = ""; $("timing").textContent = ""; $("raw").textContent = "—";
   setOverall("", "Checking…");
 }
 
 function render(d, ms) {
-  const f = d.faceMatch, v = f.verificationResult, s = d.scores, dc = d.dresscode;
+  const C = d.checks, f = d.faceMatch, dc = d.dresscode;
+  const off = (k, card) => { $(k + "Val").textContent = "—"; badge(k + "Badge", "", "not requested"); bar(k + "Bar", 0); $(card).closest(".metric").classList.add("off"); };
   // face
-  let fLabel = v.isMatch ? "match" : "no match", fCls = v.isMatch ? "pass" : "fail";
-  if (f.livenessFailed) fLabel = "spoof";
-  if (f.decodeFailed) fLabel = "unreadable";
-  if (!f.faceDetected && !f.decodeFailed) fLabel = "no face";
-  $("faceVal").innerHTML = v.score == null ? "—" : `${fmt(v.score)} <small>/ ${fmt(v.threshold, 2)}</small>`;
-  badge("faceBadge", fCls, fLabel); bar("faceBar", v.score, fCls, "faceTh", v.threshold);
-  const live = f.liveness;
-  kv("faceKv", [
-    ["liveness", live ? `${fmt(s.liveness, 2)} ${live.is_live ? "live" : "not live"}${live.reason ? " · " + live.reason.replaceAll("_", " ") : ""}` : "off"],
-    ["margin", fmt(f.scores && f.scores.margin)],
-    ["threshold", `${fmt(v.threshold, 2)} (${v.thresholdSource || "—"})`],
-  ]);
-  // uniform (the decision when the trained model is loaded)
-  const uCls = dc.isMatch ? "pass" : "fail";
-  $("uniformVal").innerHTML = `${fmt(dc.score)} <small>/ ${fmt(dc.threshold, 2)}</small>`;
-  badge("uniformBadge", uCls, dc.isMatch ? "in uniform" : "not uniform");
-  bar("uniformBar", dc.score, uCls, "uniformTh", dc.threshold);
-  kv("uniformKv", [
-    ["engine", dc.engine === "siglip2" ? "SigLIP2 + trained classifier" : "colour/logo rule (model not loaded)"],
-    ["region", dc.region + (dc.faceDetected ? "" : " (no face anchor)")],
-  ]);
-  // colour
-  const blue = s.dressColour;
-  const cCls = dc.reason === "no_blue_region" ? "fail" : blue >= 0.35 ? "pass" : blue >= 0.15 ? "warn" : "fail";
-  $("colourVal").textContent = pct(blue);
-  badge("colourBadge", cCls, cCls === "pass" ? "loadshare blue" : cCls === "warn" ? "partly blue" : "not blue");
-  bar("colourBar", blue, cCls);
-  kv("colourKv", [["share of shirt in Loadshare blue", pct(blue)], ["region", dc.region + (dc.faceDetected ? "" : " (no face anchor)")]]);
+  if (C.face_match) {
+    const c = C.face_match, v = f.verificationResult;
+    let label = c.passed ? "match" : "no match";
+    if (c.livenessFailed) label = "spoof";
+    if (f.decodeFailed) label = "unreadable";
+    if (!c.faceDetected && !f.decodeFailed) label = "no face";
+    const cls = c.passed ? "pass" : "fail";
+    $("faceVal").innerHTML = c.score == null ? "—" : `${fmt(c.score)} <small>/ ${fmt(c.threshold, 2)}</small>`;
+    badge("faceBadge", cls, label); bar("faceBar", c.score, cls, "faceTh", c.threshold);
+    const live = f.liveness;
+    kv("faceKv", [
+      ["liveness", live ? `${fmt(c.liveness, 2)} ${live.is_live ? "live" : "not live"}${live.reason ? " · " + live.reason.split("_").join(" ") : ""}` : "off"],
+      ["margin", fmt(f.scores && f.scores.margin)],
+      ["threshold", `${fmt(v.threshold, 2)} (${v.thresholdSource || "—"})`],
+    ]);
+  } else off("face", "faceVal");
+  // dress colour
+  if (C.dress_color) {
+    const c = C.dress_color, cls = c.passed ? "pass" : "fail";
+    $("colourVal").innerHTML = `${fmt(c.score)} <small>/ ${fmt(c.threshold, 2)}</small>`;
+    badge("colourBadge", cls, c.passed ? "loadshare blue" : "not loadshare blue");
+    bar("colourBar", c.score, cls, "colourTh", c.threshold);
+    kv("colourKv", [["share of torso in Loadshare blue", pct(dc.scores.blueCoverage)], ["region", dc.region + (dc.faceDetected ? "" : " (no face anchor)")]]);
+  } else off("colour", "colourVal");
   // logo
-  const logo = s.logo;
-  const lCls = logo == null ? "warn" : logo >= 0.5 ? "pass" : logo >= 0.3 ? "warn" : "fail";
-  $("logoVal").textContent = logo == null ? "n/a" : fmt(logo);
-  badge("logoBadge", lCls, logo == null ? "too small" : logo >= 0.5 ? "logo found" : logo >= 0.3 ? "weak" : "not found");
-  bar("logoBar", logo, lCls);
-  kv("dressKv", [
-    logo == null ? ["logo", "chest too small in frame — come closer"] : ["logo template", "correlation 0–1 (supporting signal)"],
-  ]);
+  if (C.logo) {
+    const c = C.logo, cls = c.passed ? "pass" : "fail";
+    $("logoVal").innerHTML = `${fmt(c.score)} <small>/ ${fmt(c.threshold, 2)}</small>`;
+    badge("logoBadge", cls, c.passed ? "logo found" : "no logo");
+    bar("logoBar", c.score, cls, "logoTh", c.threshold);
+    kv("dressKv", [["uniform (colour + logo) model", fmt(dc.scores.uniform)]]);
+  } else off("logo", "logoVal");
   // overall
-  const face = !!v.isMatch, dress = !!dc.isMatch;
+  const failed = Object.entries(C).filter(([, c]) => !c.passed).map(([k]) => ({ face_match: "face", dress_color: "dress colour", logo: "logo" })[k]);
   setOverall(d.isCleared ? "pass" : "fail",
-    d.isCleared ? "Cleared — same rider, in uniform"
-    : !face && !dress ? "Blocked — face and dress code failed"
-    : !face ? (f.livenessFailed ? "Blocked — liveness failed" : "Blocked — face does not match")
-    : "Blocked — not in uniform");
+    d.isCleared ? `Cleared — ${Object.keys(C).length} of ${Object.keys(C).length} checks passed` : `Blocked — ${failed.join(", ")} failed`);
   $("timing").textContent = `round trip ${ms} ms`;
   $("raw").textContent = JSON.stringify(d, null, 2);
 }
@@ -552,7 +424,7 @@ async function run() {
     }
     render(d, Math.round(performance.now() - t0));
   } catch (err) {
-    for (const k of ["face", "uniform", "colour", "logo"]) { $(k + "Val").textContent = "—"; badge(k + "Badge", "warn", "error"); }
+    for (const k of ["face", "colour", "logo"]) { $(k + "Val").textContent = "—"; badge(k + "Badge", "warn", "error"); }
     setOverall("", "Check failed — see error"); $("err").textContent = err.message;
   } finally {
     $("stage").classList.remove("scanning"); ready();

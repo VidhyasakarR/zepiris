@@ -149,9 +149,12 @@ class _FakeClassifier:
         self._prob = prob
         self.calls: list = []
 
-    def score(self, image_rgb, face_bbox):
+    def score_all(self, image_rgb, face_bbox):
         self.calls.append(face_bbox)
-        return self._prob
+        return {"uniform": self._prob, "dress_color": 0.8, "logo": 0.1}
+
+    def thresholds(self):
+        return {"uniform": self.threshold, "dress_color": 0.38, "logo": 0.4}
 
 
 def test_classifier_score_decides_and_colour_is_reported_alongside():
@@ -165,6 +168,8 @@ def test_classifier_score_decides_and_colour_is_reported_alongside():
     assert result.reason is None                 # the rule's veto does not apply
     assert result.blue_coverage == pytest.approx(0.0)
     assert clf.calls == [[0.4, 0.1, 0.6, 0.3]]    # torso crop anchored on the face box
+    assert result.check_scores == {"dress_color": 0.8, "logo": 0.1}
+    assert result.check_thresholds == {"dress_color": 0.38, "logo": 0.4}
 
 
 def test_classifier_gets_no_box_when_no_face():

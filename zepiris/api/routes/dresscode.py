@@ -87,6 +87,8 @@ async def score_dresscode(
         score=result.score,
         threshold=threshold,
         engine=result.engine,
+        check_scores=result.check_scores,
+        check_thresholds=result.check_thresholds,
         scores=DresscodeScores(
             uniform=result.uniform_score,
             blue_coverage=result.blue_coverage,

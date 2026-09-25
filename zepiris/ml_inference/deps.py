@@ -5,6 +5,7 @@ from typing import Annotated, TypeVar
 from fastapi import Depends, HTTPException, Request
 
 from zepiris.ml_inference.blur_detection import BlurDetectionService
+from zepiris.ml_inference.capture_quality import CaptureQualityService
 from zepiris.ml_inference.dresscode_detection import DresscodeDetectionService
 from zepiris.ml_inference.face_embedding import FaceEmbeddingService
 from zepiris.ml_inference.image_quality_assessment import (
@@ -79,9 +80,19 @@ def _iqa(request: Request) -> ImageQualityAssessmentService:
     return svc
 
 
+def _quality(request: Request) -> CaptureQualityService:
+    return _require(
+        "quality",
+        getattr(request.app.state, "quality_service", None),
+        hint="Capture quality needs the face detector and the blur model (models/blur_model.pth); "
+        "see ML_SERVICE_QUALITY_CHECK_ENABLED.",
+    )
+
+
 NSFWDep = Annotated[NSFWDetectionService, Depends(_nsfw)]
 SpoofDep = Annotated[SpoofDetectionService, Depends(_spoof)]
 BlurDep = Annotated[BlurDetectionService, Depends(_blur)]
 FaceEmbeddingDep = Annotated[FaceEmbeddingService, Depends(_face_embedding)]
 IQADep = Annotated[ImageQualityAssessmentService, Depends(_iqa)]
 DresscodeDep = Annotated[DresscodeDetectionService, Depends(_dresscode)]
+QualityDep = Annotated[CaptureQualityService, Depends(_quality)]

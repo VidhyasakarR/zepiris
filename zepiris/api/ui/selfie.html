@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Rider Selfie</title>
+<!--
+  Camera-only checkpoint page. Open it with a POST (form or JSON) carrying the
+  checkpoint parameters — nothing goes in the URL, nothing is set on screen:
+
+    checks                comma list / array of face_match, dress_color, logo (default: all)
+    source_selfie_s3      enrolled selfie link   } one of these, required when
+    source_selfie_b64     enrolled selfie base64 } face_match is requested
+    threshold, dress_color_threshold, logo_threshold   optional pass-mark overrides
+    zoom                  camera zoom-out: 0.75, 0.8, 0.9 or 1 (default 0.75); the
+                          rider can still change it with the on-screen chips
+    challenge             active liveness before capture: blink (default), turn,
+                          random or none
+
+  The server embeds them below; Submit sends them in the body of
+  POST /v1/checkpoint/verify together with the captured selfie.
+-->
+<link rel="stylesheet" href="/ui/static/guide.css">
+<style>
+  /* Full screen on the phone: the camera fills the viewport, everything else
+     floats over it. */
+  :root {
+    --bg: #05080f; --panel: rgba(15, 23, 40, .92); --ink: #e8edf7; --muted: #aab4c6; --line: rgba(255, 255, 255, .14);
+    --brand: #3b7bff; --pass: #3ccf95; --pass-soft: rgba(60, 207, 149, .16); --fail: #ff7a6b; --fail-soft: rgba(255, 122, 107, .16);
+    --font: "Avenir Next", "Segoe UI", system-ui, sans-serif; --mono: ui-monospace, "SF Mono", Menlo, monospace;
+    --dock: calc(96px + env(safe-area-inset-bottom));      /* height of the bottom controls */
+    --banner-bottom: calc(var(--dock) + 10px);
+    --light-top: calc(max(12px, env(safe-area-inset-top)) + 58px);
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--ink); font: 15px/1.45 var(--font); }
+  .stage { position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh; max-height: none; aspect-ratio: auto; border-radius: 0; }
+  header {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 2; text-align: center; pointer-events: none;
+    padding: max(12px, env(safe-area-inset-top)) 16px 26px;
+    background: linear-gradient(rgba(5, 8, 15, .78), rgba(5, 8, 15, 0));
+  }
+  header h1 { margin: 0; font-size: 17px; font-weight: 800; letter-spacing: -.01em; }
+  header p { margin: 2px 0 0; color: var(--muted); font-size: 12.5px; }
+  .dock {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 2;
+    padding: 18px 16px max(14px, env(safe-area-inset-bottom));
+    background: linear-gradient(rgba(5, 8, 15, 0), rgba(5, 8, 15, .85) 40%);
+  }
+  .dock-inner { max-width: 520px; margin: 0 auto; display: flex; flex-direction: column; gap: 8px; }
+  .bar { display: flex; gap: 10px; }
+  button.act { flex: 1; font: 700 16px var(--font); border-radius: 14px; padding: 15px 14px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; transition: background .15s, opacity .15s; }
+  button.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+  button.go { background: #0f8a5f; border-color: #0f8a5f; color: #fff; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .note { text-align: center; color: var(--muted); font: 12px var(--mono); min-height: 1em; }
+  .warn { display: flex; gap: 10px; align-items: flex-start; background: #3a1512; color: #ffb3a8; border: 1px solid rgba(255, 122, 107, .45); border-radius: 14px; padding: 11px 13px; font-size: 14px; line-height: 1.35; }
+  .warn b { color: #fff; }
+  .sheet {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 3; max-height: 70vh; overflow: auto;
+    background: #0f1728; border-top: 1px solid var(--line); border-radius: 18px 18px 0 0;
+    padding: 16px 16px max(16px, env(safe-area-inset-bottom)); box-shadow: 0 -12px 40px rgba(0, 0, 0, .5);
+  }
+  .sheet-inner { max-width: 520px; margin: 0 auto; }
+  .overall { font-weight: 800; font-size: 20px; margin-bottom: 2px; }
+  .overall.pass { color: var(--pass); } .overall.fail { color: var(--fail); }
+  .row { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
+  .row .name { font-weight: 700; }
+  .row .score { font: 600 14px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+  .chip { font: 700 12px var(--mono); padding: 3px 9px; border-radius: 999px; }
+  .chip.pass { background: var(--pass-soft); color: var(--pass); } .chip.fail { background: var(--fail-soft); color: var(--fail); }
+  .error {
+    position: fixed; top: calc(max(12px, env(safe-area-inset-top)) + 58px); left: 16px; right: 16px; z-index: 4;
+    max-width: 520px; margin: 0 auto; background: #2a1414; color: var(--fail); border: 1px solid rgba(255, 122, 107, .4);
+    border-radius: 14px; padding: 12px 14px; font-size: 14px;
+  }
+</style>
+</head>
+<body>
+<div class="stage" id="stage"></div>
+<header>
+  <h1>Checkpoint selfie</h1>
+  <p>Face in the oval · T-shirt down to the stomach</p>
+</header>
+<div class="error" id="error" hidden></div>
+<div class="dock" id="dock">
+  <div class="dock-inner">
+    <div class="warn" id="blurWarn" hidden><span>⚠️</span><span id="warnText"></span></div>
+    <div class="note" id="note"></div>
+    <div class="bar" id="liveBar">
+      <button class="act primary" id="startBtn" hidden>Start camera</button>
+      <button class="act" id="snapBtn" disabled>Capture — align first</button>
+    </div>
+    <div class="bar" id="shotBar" hidden>
+      <button class="act" id="retakeBtn">Retake</button>
+      <button class="act primary" id="submitBtn">Submit</button>
+    </div>
+  </div>
+</div>
+<div class="sheet" id="result" hidden></div>
+
+<script id="config" type="application/json">null</script>
+<script type="module">
+import { createCapture, serverQuality } from "/ui/static/guide.js";
+const $ = (id) => document.getElementById(id);
+const LABEL = { face_match: "Face match", dress_color: "Dress colour", logo: "Logo" };
+
+// Parameters POSTed to this page (validated by the server); never from the URL.
+const cfg = JSON.parse($("config").textContent);
+let selfie = null;
+let attempt = 0; // bumps on every capture / retake: late replies for an old photo are dropped
+const esc = (v) => String(v).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
+// Tell a host app (Android WebView) what happened: results and failures alike.
+const bridge = (msg) => { try { window.ZepirisBridge?.postMessage?.(JSON.stringify(msg)); } catch (_) {} };
+const showError = (m) => { $("error").textContent = m; $("error").hidden = !m; };
+
+// ---- capture: enabled only while the pose is aligned (outline green) --------
+const cam = createCapture($("stage"), {
+  zoom: cfg?.zoom ?? 0.75,
+  challenge: cfg?.challenge ?? "blink",
+  onReady: (ok) => {
+    $("snapBtn").disabled = !ok;
+    $("snapBtn").classList.toggle("go", ok);
+    $("snapBtn").textContent = ok ? "Capture" : "Capture — align first";
+  },
+  onPoseStatus: (t) => ($("note").textContent = t),
+  onState: (st) => {
+    if (st === "live") { $("startBtn").hidden = true; }
+    if (st === "error") { $("startBtn").hidden = false; bridge({ type: "camera_error" }); }
+    if (st === "captured") { $("liveBar").hidden = true; $("shotBar").hidden = false; }
+  },
+  onCapture: async (dataUrl, q) => {
+    selfie = dataUrl;
+    const mine = ++attempt;
+    $("blurWarn").hidden = true;
+    $("submitBtn").disabled = true;
+    $("note").textContent = "Checking the photo…";
+    // The server check (blur model on face + T-shirt, visibility, light) decides;
+    // the in-browser reading is only the fallback if the server can't be reached.
+    // q.raw = the photo before low-light brightening, so "too dark" is still seen
+    const sq = await serverQuality(q.raw || dataUrl, "");
+    if (mine !== attempt) return; // retaken meanwhile
+    const warnings = sq ? sq.warnings.map((w) => w.message)
+      : q.dark ? ["Too dark to see your face — move to a brighter place."]
+      : q.blurry ? ["Photo is blurry — hold the phone steady and retake."] : [];
+    const bad = warnings.length > 0;
+    const wt = $("warnText"); wt.replaceChildren();
+    const head = document.createElement("b"); head.textContent = "Retake recommended — the checks may fail:"; wt.append(head);
+    for (const m of warnings) { wt.append(document.createElement("br"), `• ${m}`); } // text nodes: server strings never become markup
+    $("blurWarn").hidden = !bad;
+    $("stage").classList.toggle("blurry", bad);
+    $("retakeBtn").classList.toggle("primary", bad);
+    $("submitBtn").classList.toggle("primary", !bad);
+    $("submitBtn").textContent = bad ? "Submit anyway" : "Submit";
+    $("submitBtn").disabled = false;
+    $("note").textContent = bad ? "" : q.brightened ? "Face and T-shirt clear (brightened for low light) — Submit" : "Face and T-shirt clear — Submit";
+  },
+});
+$("startBtn").addEventListener("click", () => cam.start());
+$("snapBtn").addEventListener("click", () => cam.capture());
+$("retakeBtn").addEventListener("click", () => {
+  if (submitting) return; // the result for this photo is on its way
+  attempt++;
+  selfie = null; $("result").hidden = true; $("dock").hidden = false; showError(""); $("blurWarn").hidden = true;
+  $("note").textContent = ""; $("stage").classList.remove("blurry");
+  $("shotBar").hidden = true; $("liveBar").hidden = false; $("submitBtn").disabled = false;
+  cam.start();
+});
+
+// ---- submit: the POSTed parameters go in the checkpoint request body -------
+let submitting = false;
+$("submitBtn").addEventListener("click", async () => {
+  if (!selfie || submitting) return;
+  const mine = attempt;
+  const body = { face_check_b64: selfie, checks: cfg.checks };
+  for (const k of ["source_selfie_s3", "source_selfie_b64", "threshold", "dress_color_threshold", "logo_threshold"]) {
+    if (cfg[k] !== undefined) body[k] = cfg[k];
+  }
+  submitting = true; $("retakeBtn").disabled = true;
+  $("submitBtn").disabled = true; $("submitBtn").textContent = "Checking…"; showError(""); $("stage").classList.add("scanning");
+  const ctl = typeof AbortController === "function" ? new AbortController() : null;
+  const timer = ctl && setTimeout(() => ctl.abort(), 30000);
+  try {
+    const r = await fetch(`/v1/checkpoint/verify`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctl?.signal });
+    let d = null; try { d = await r.json(); } catch (_) {}
+    if (!r.ok) {
+      const det = d && (d.detail || d);
+      const why = typeof det === "string" ? det : det?.message || (det ? JSON.stringify(det) : r.statusText || "no details");
+      throw new Error(`Server error ${r.status}: ${why}`);
+    }
+    if (mine === attempt) render(d);
+  } catch (e) {
+    bridge({ type: "checkpoint_error", message: e.message });
+    showError(e.message.startsWith("Server error") ? e.message
+      : e.name === "AbortError" ? "The server took too long — check the connection and Submit again"
+      : `Could not reach the server (${e.message})`);
+    $("submitBtn").disabled = false;
+  } finally {
+    if (timer) clearTimeout(timer); submitting = false; $("retakeBtn").disabled = false;
+    $("submitBtn").textContent = $("blurWarn").hidden ? "Submit" : "Submit anyway"; $("stage").classList.remove("scanning");
+  }
+});
+
+function render(d) {
+  const rows = Object.entries(d.checks).map(([k, c]) => {
+    const extra = k === "face_match" && c.livenessFailed ? " · not live" : k === "face_match" && c.faceDetected === false ? " · no face" : "";
+    const num = (v) => (typeof v === "number" && isFinite(v) ? v.toFixed(2) : "—");
+    return `<div class="row"><span class="name">${esc(LABEL[k] || k)}</span>
+      <span class="score">${num(c.score)} / ${num(c.threshold)}${extra}</span>
+      <span class="chip ${c.passed ? "pass" : "fail"}">${c.passed ? "✓ PASS" : "✕ FAIL"}</span></div>`;
+  }).join("");
+  const failed = Object.entries(d.checks).filter(([, c]) => !c.passed).map(([k]) => LABEL[k] || k);
+  $("result").innerHTML = `<div class="overall ${d.isCleared ? "pass" : "fail"}">${d.isCleared ? "✓ Cleared" : "✕ Not cleared"}</div>
+    <div style="color:var(--muted);font-size:13px;margin-bottom:6px">${d.isCleared ? "All checks passed" : esc(failed.join(", ")) + " failed — retake to try again"}</div>${rows}
+    <div class="bar" style="margin-top:12px"><button class="act" id="againBtn">Retake</button></div>`;
+  $("result").innerHTML = `<div class="sheet-inner">${$("result").innerHTML}</div>`;
+  $("result").hidden = false;
+  $("dock").hidden = true;
+  $("againBtn").addEventListener("click", () => $("retakeBtn").click());
+  // Let a host app (Android WebView) read the outcome.
+  bridge({ type: "checkpoint_result", result: d });
+  $("note").textContent = "";
+}
+
+// ---- go --------------------------------------------------------------------
+if (!cfg) {
+  showError("Open this page from the app: it must be POSTed the rider's checkpoint details.");
+  $("snapBtn").disabled = true;
+} else {
+  cam.start().then((ok) => { if (!ok) $("note").textContent = "Tap Start camera to try again"; });
+}
+</script>
+</body>
+</html>

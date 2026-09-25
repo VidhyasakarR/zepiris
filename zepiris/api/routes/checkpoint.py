@@ -1,9 +1,17 @@
-"""Rider checkpoint: face match and dress code on one selfie, in one call.
+"""Rider checkpoint: the caller chooses which checks run on one selfie.
 
-The selfie is resolved once and both checks run concurrently, so the call costs
-the slower of the two rather than their sum. Each block is exactly what its
-standalone endpoint would return (``/v1/faces/facematch/verify`` and
-``/v1/dresscode/match``) — the decisions are not re-implemented here.
+``checks`` picks any of ``face_match``, ``dress_color`` and ``logo``; only those
+run, and ``isCleared`` is true only when every requested check passes.
+
+* face_match  — the ``/v1/faces/facematch/verify`` decision (liveness-gated when
+  ``ZEPIRIS_LIVENESS_ENABLED``); needs ``source_selfie_*``.
+* dress_color / logo — per-check heads of the dress-code model. Both come from
+  ONE dress-code inference, so asking for both costs no more than asking for one.
+
+Face match and dress code run concurrently when both are requested, so the call
+costs the slower of the two rather than their sum. A check that is not requested
+is not run at all (no source needed for dress-only; no dress-code inference for
+face-only).
 """
 
 from __future__ import annotations
@@ -11,14 +19,17 @@ from __future__ import annotations
 import asyncio
 import uuid
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
+from zepiris.api.image_source import resolve_image_source
 from zepiris.api.routes.dresscode import score_dresscode
 from zepiris.api.routes.face import facematch_from_bytes, resolve_facematch_sources
 from zepiris.deps import LearnerDep, MatcherDep, S3FetcherDep, SettingsDep
 from zepiris.schemas.checkpoint import CheckpointRequest
 
 router = APIRouter()
+
+_DRESS_CHECKS = ("dress_color", "logo")
 
 
 @router.post("/verify")
@@ -30,21 +41,33 @@ async def checkpoint_verify(
     fetcher: S3FetcherDep,
     learner: LearnerDep,
 ) -> dict:
-    """Is this the enrolled rider, and are they in uniform?
-
-    ``isCleared`` is true only when the face matches (and passes liveness, when
-    enabled) *and* the dress code matches. ``scores`` gathers the headline
-    numbers — face match, liveness, shirt colour, logo — in one flat block.
-    """
+    """Run the requested checks on the live selfie; cleared only if all pass."""
     request_id = str(uuid.uuid4())
-    probe_raw, reference_raw = await resolve_facematch_sources(req, fetcher)
-    dress_threshold = (
-        req.dresscode_threshold
-        if req.dresscode_threshold is not None
-        else settings.dresscode_threshold
-    )
-    face, dress = await asyncio.gather(
-        facematch_from_bytes(
+    requested = req.requested()
+    overrides = {"threshold": req.threshold, "dress_color_threshold": req.dress_color_threshold,
+                 "logo_threshold": req.logo_threshold}
+    sent = [k for k, v in overrides.items() if v is not None]
+    if sent and not getattr(settings, "allow_threshold_override", False):
+        # Pass marks are the server's decision; a device must not choose its own.
+        raise HTTPException(
+            status_code=403,
+            detail={"message": "threshold_override_disabled", "fields": sent,
+                    "hint": "Set ZEPIRIS_ALLOW_THRESHOLD_OVERRIDE=true to allow (testing only)."},
+        )
+    want_face = "face_match" in requested
+    want_dress = any(c in requested for c in _DRESS_CHECKS)
+
+    if want_face:
+        probe_raw, reference_raw = await resolve_facematch_sources(req, fetcher)
+    else:
+        probe_raw = await resolve_image_source(
+            b64=req.face_check_b64, s3_url=req.face_check_s3, fetcher=fetcher, field="face_check"
+        )
+        reference_raw = None
+
+    tasks = {}
+    if want_face:
+        tasks["face"] = facematch_from_bytes(
             request,
             request_id=request_id,
             probe_raw=probe_raw,
@@ -53,30 +76,58 @@ async def checkpoint_verify(
             settings=settings,
             matcher=matcher,
             learner=learner,
-        ),
-        score_dresscode(
-            request.app.state.ml_async, probe_raw, request_id=request_id, threshold=dress_threshold
-        ),
-    )
-    face.pop("requestId", None)
-    dress_body = dress.model_dump(by_alias=True)
-    dress_body.pop("requestId", None)
+        )
+    if want_dress:
+        tasks["dress"] = score_dresscode(
+            request.app.state.ml_async,
+            probe_raw,
+            request_id=request_id,
+            threshold=settings.dresscode_threshold,
+        )
+    done = dict(zip(tasks, await asyncio.gather(*tasks.values())))
 
-    face_ok = bool(face["verificationResult"]["isMatch"])
-    face_scores = face.get("scores") or {}
-    return {
-        "requestId": request_id,
-        "isCleared": face_ok and dress.is_match,
-        "scores": {
-            "faceMatch": face["verificationResult"]["score"],
-            "faceThreshold": face["verificationResult"]["threshold"],
-            "liveness": face_scores.get("livenessScore"),
-            "uniform": dress.scores.uniform,
-            "dressColour": dress.scores.blue_coverage,
-            "logo": dress.scores.logo_match,
-            "dresscode": dress.score,
-            "dresscodeThreshold": dress.threshold,
-        },
-        "faceMatch": face,
-        "dresscode": dress_body,
-    }
+    checks: dict[str, dict] = {}
+    body: dict = {"requestId": request_id, "checksRequested": list(requested)}
+
+    if want_face:
+        face = done["face"]
+        face.pop("requestId", None)
+        result = face["verificationResult"]
+        checks["face_match"] = {
+            "passed": bool(result["isMatch"]),
+            "score": result["score"],
+            "threshold": result["threshold"],
+            "liveness": (face.get("scores") or {}).get("livenessScore"),
+            "livenessFailed": bool(face.get("livenessFailed")),
+            "faceDetected": bool(face.get("faceDetected")),
+        }
+        body["faceMatch"] = face
+
+    if want_dress:
+        dress = done["dress"]
+        per = dress.check_scores or {}
+        if any(c in requested and c not in per for c in _DRESS_CHECKS):
+            # The per-check heads live on the dress-code model; without it there
+            # is no score to decide colour or logo on, and guessing would pass
+            # or fail riders on noise.
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "message": "dresscode_model_unavailable",
+                    "hint": "dress_color / logo need the SigLIP2 dress-code model on the ML service "
+                    "(models/siglip2_base_vision.onnx).",
+                },
+            )
+        overrides = {"dress_color": req.dress_color_threshold, "logo": req.logo_threshold}
+        for c in _DRESS_CHECKS:
+            if c not in requested:
+                continue
+            threshold = overrides[c] if overrides[c] is not None else dress.check_thresholds[c]
+            checks[c] = {"passed": per[c] >= threshold, "score": per[c], "threshold": threshold}
+        dress_body = dress.model_dump(by_alias=True)
+        dress_body.pop("requestId", None)
+        body["dresscode"] = dress_body
+
+    body["isCleared"] = all(c["passed"] for c in checks.values())
+    body["checks"] = checks
+    return body

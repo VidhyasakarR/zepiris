@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import ipaddress
 import time
 from collections import OrderedDict
 
@@ -99,6 +101,51 @@ class _ReferenceBytesCache:
         }
 
 
+def _blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+            or ip.is_multicast or ip.is_unspecified)
+
+
+def make_url_guard(*, allowed_hosts: tuple[str, ...] = (), block_private: bool = True):
+    """An httpx ``request`` event hook that refuses internal / unlisted targets.
+
+    Image URLs arrive from rider devices (``face_check_s3``, ``source_selfie_s3``,
+    ``image_s3``), so without this the server can be made to GET its own ML
+    service, the cloud metadata endpoint (169.254.169.254) or anything else on
+    the private network. The hook runs on every hop, so a redirect cannot
+    bounce past it.
+
+    ``allowed_hosts``: exact hosts or ``.suffix`` entries (``.amazonaws.com``);
+    empty = any public host. ``block_private``: refuse hosts that resolve to
+    loopback / private / link-local / reserved addresses.
+    """
+
+    async def guard(request: httpx.Request) -> None:
+        host = (request.url.host or "").lower().rstrip(".")
+        if request.url.scheme not in ("http", "https") or not host:
+            raise ReferenceImageFetchError(reason="url_not_allowed", detail_msg="scheme")
+        if allowed_hosts and not any(
+            host == h or (h.startswith(".") and host.endswith(h)) for h in allowed_hosts
+        ):
+            raise ReferenceImageFetchError(reason="url_not_allowed", detail_msg=f"host {host}")
+        if not block_private:
+            return
+        try:
+            ips = [ipaddress.ip_address(host)]
+        except ValueError:
+            try:
+                infos = await asyncio.get_running_loop().getaddrinfo(host, request.url.port or 443)
+            except OSError as exc:
+                raise ReferenceImageFetchError(reason="transport_error", detail_msg="dns") from exc
+            ips = [ipaddress.ip_address(i[4][0].split("%")[0]) for i in infos]
+        if any(_blocked_ip(ip) for ip in ips):
+            raise ReferenceImageFetchError(reason="url_not_allowed", detail_msg="private address")
+
+    return guard
+
+
 class S3ImageFetcher:
     """Fetch a reference image from a presigned/public URL via a guarded HTTP GET.
 
@@ -132,24 +179,27 @@ class S3ImageFetcher:
             if cached is not None:
                 return cached
 
+        # Streamed, so an oversized (or endless) body is cut off at max_bytes
+        # instead of being read into memory first.
         try:
-            response = await self._client.get(url)
+            async with self._client.stream("GET", url) as response:
+                if response.status_code != 200:
+                    raise ReferenceImageFetchError(
+                        reason="bad_status", detail_msg=f"status_{response.status_code}"
+                    )
+                chunks, size = [], 0
+                async for chunk in response.aiter_bytes():
+                    size += len(chunk)
+                    if size > self._max_bytes:
+                        raise ReferenceImageFetchError(
+                            reason="too_large", detail_msg=f"over_{self._max_bytes}_bytes"
+                        )
+                    chunks.append(chunk)
+                data = b"".join(chunks)
         except httpx.TimeoutException as exc:
-            raise ReferenceImageFetchError(reason="timeout", detail_msg=str(exc)) from exc
+            raise ReferenceImageFetchError(reason="timeout", detail_msg="timeout") from exc
         except httpx.HTTPError as exc:
-            raise ReferenceImageFetchError(reason="transport_error", detail_msg=str(exc)) from exc
-
-        if response.status_code != 200:
-            raise ReferenceImageFetchError(
-                reason="bad_status", detail_msg=f"status_{response.status_code}"
-            )
-
-        data = response.content
-        if len(data) > self._max_bytes:
-            raise ReferenceImageFetchError(
-                reason="too_large",
-                detail_msg=f"{len(data)}_bytes_max_{self._max_bytes}",
-            )
+            raise ReferenceImageFetchError(reason="transport_error", detail_msg=type(exc).__name__) from exc
         if not data:
             raise ReferenceImageFetchError(reason="empty", detail_msg="empty_body")
 

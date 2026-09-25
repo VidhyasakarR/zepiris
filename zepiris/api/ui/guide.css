@@ -1,0 +1,51 @@
+/* Capture stage shared by /ui and /ui/selfie (see guide.js).
+   The stage may be any size (a 3:4 card, or the whole phone screen); guide.js
+   positions the camera picture inside it by the zoom factor and lays the
+   outline over the visible part. */
+.stage { position: relative; aspect-ratio: 3 / 4; max-height: var(--stage-max-h, 76vh); margin: 0 auto; border-radius: 14px; overflow: hidden; background: #05080f; }
+.stage video, .stage > img.shot { position: absolute; object-fit: fill; }
+.stage video { transform: scaleX(-1); } /* mirror like a mirror; the captured photo is not */
+.stage .content { position: absolute; inset: 0; pointer-events: none; }
+.stage .content svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.stage .skeleton { transform: scaleX(-1); }
+.stage .guide-dim { fill: rgba(5, 8, 15, .55); }
+.stage .guide-line { fill: none; stroke: rgba(255, 255, 255, .85); stroke-width: .6; stroke-dasharray: 2 1.4; transition: stroke .2s; }
+.stage.aligned .guide-line { stroke: #3ccf95; stroke-dasharray: none; stroke-width: .9; }
+.stage.aligned .guide-dim { fill: rgba(5, 25, 15, .45); }
+.stage .guide-label { font: 600 2.3px ui-monospace, Menlo, monospace; fill: rgba(255, 255, 255, .75); letter-spacing: .15px; text-anchor: middle; }
+.stage .skeleton line, .stage .skeleton .head { stroke: #8fb4ff; stroke-width: .6; stroke-linecap: round; fill: none; }
+.stage .skeleton .head { stroke-width: .5; stroke-dasharray: 1.2 .8; }
+.stage .skeleton circle { fill: #fff; stroke: #1f5fd6; stroke-width: .35; }
+.stage.aligned .skeleton line, .stage.aligned .skeleton .head { stroke: #3ccf95; }
+.stage .banner {
+  position: absolute; left: 50%; bottom: var(--banner-bottom, 14px); transform: translateX(-50%); max-width: calc(100% - 28px);
+  font: 600 13px ui-monospace, Menlo, monospace; color: #fff; background: rgba(5, 8, 15, .72);
+  padding: 8px 14px; border-radius: 999px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  backdrop-filter: blur(6px);
+}
+.stage.aligned .banner { background: rgba(15, 138, 95, .92); }
+.stage .zoom {
+  position: absolute; left: 50%; bottom: calc(var(--banner-bottom, 14px) + 44px); transform: translateX(-50%);
+  display: flex; gap: 6px; padding: 4px; border-radius: 999px; background: rgba(5, 8, 15, .55); backdrop-filter: blur(6px);
+}
+.stage .zoom button {
+  font: 700 12px ui-monospace, Menlo, monospace; color: #e8edf7; background: transparent; border: 0;
+  min-width: 40px; height: 32px; padding: 0 8px; border-radius: 999px; cursor: pointer;
+}
+.stage .zoom button.on { background: #fff; color: #05080f; }
+.stage .flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
+.stage .flash.go { animation: stage-flash .45s ease-out; }
+@keyframes stage-flash { from { opacity: .85; } to { opacity: 0; } }
+.stage.scanning::after { content: ""; position: absolute; left: 0; right: 0; height: 3px; background: var(--brand, #1f5fd6); box-shadow: 0 0 18px 4px var(--brand, #1f5fd6); animation: stage-scan 1.1s ease-in-out infinite alternate; }
+@keyframes stage-scan { from { top: 4%; } to { top: 94%; } }
+.stage .idle { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; color: #c9d3e6; font: 13px ui-monospace, Menlo, monospace; padding: 30px; }
+.stage .idle p { margin: 0; line-height: 1.6; background: rgba(5, 8, 15, .6); padding: 10px 14px; border-radius: 10px; }
+.stage [hidden] { display: none !important; }
+.stage.captured .content, .stage.captured .zoom { display: none; }
+.stage.blurry .banner { background: rgba(196, 59, 47, .92); }
+.stage .light { position: absolute; left: 50%; top: var(--light-top, 12px); transform: translateX(-50%); display: none;
+  width: max-content; max-width: calc(100% - 32px); text-align: center; line-height: 1.35;
+  font: 600 12px ui-monospace, Menlo, monospace; color: #1b1400; background: #ffd66b; padding: 7px 12px; border-radius: 14px; }
+.stage.lowlight:not(.captured) .light { display: block; }
+.stage.challenge .banner { background: rgba(31, 95, 214, .95); animation: challenge-pulse 1.2s ease-in-out infinite; }
+@keyframes challenge-pulse { 50% { box-shadow: 0 0 0 6px rgba(91, 146, 255, .35); } }

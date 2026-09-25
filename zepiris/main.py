@@ -16,7 +16,7 @@ from zepiris.services.iqa import MLInferenceIQAService
 from zepiris.services.learning import AdaptiveThresholdLearner
 from zepiris.services.matching import LocalFaceMatcher, RemoteFaceMatcher
 from zepiris.services.ml_client import AsyncMLInferenceClient, MLInferenceClient
-from zepiris.services.s3_fetcher import S3ImageFetcher
+from zepiris.services.s3_fetcher import S3ImageFetcher, make_url_guard
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +74,11 @@ async def lifespan(app: FastAPI):
             keepalive_expiry=60.0,
         ),
         follow_redirects=True,
+        max_redirects=3,
+        event_hooks={"request": [make_url_guard(
+            allowed_hosts=tuple(h.strip().lower() for h in settings.image_url_allowed_hosts.split(",") if h.strip()),
+            block_private=settings.image_url_block_private,
+        )]},
     )
     s3_fetcher = S3ImageFetcher(
         client=fetch_client,

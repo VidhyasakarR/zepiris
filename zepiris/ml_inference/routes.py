@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import io
 
 import cv2
 import numpy as np
@@ -18,11 +19,13 @@ from zepiris.ml_inference.deps import (
     FaceEmbeddingDep,
     IQADep,
     NSFWDep,
+    QualityDep,
     SpoofDep,
 )
 from zepiris.ml_inference.embedding_cache import reference_digest
 from zepiris.schemas.ml_inference import (
     BlurDetectionResult,
+    CaptureQualityResult,
     DresscodeCheckResult,
     FaceDetectionResult,
     FaceEmbeddingResult,
@@ -33,6 +36,29 @@ from zepiris.schemas.ml_inference import (
 )
 
 router = APIRouter()
+
+#: Refuse images whose header declares more pixels than this. A tiny, highly
+#: compressible PNG can declare 20000×20000 and decode to >1 GB; phone selfies
+#: are ≤ 50 MP, and the pipeline downsizes to ≤ 1600 px anyway.
+MAX_IMAGE_PIXELS = 50_000_000
+
+
+def _check_pixel_budget(raw: bytes, field: str = "image") -> None:
+    """Read only the image header and reject decompression bombs before decoding."""
+    from PIL import Image
+
+    try:
+        with Image.open(io.BytesIO(raw)) as im:
+            w, h = im.size
+    except Image.DecompressionBombError:
+        # Pillow's own ceiling (~179 MP) trips before ours can: same answer
+        raise HTTPException(status_code=413, detail=f"image_too_many_pixels: {field}") from None
+    except Exception:
+        # Fail closed: OpenCV decodes formats Pillow can't size up (HDR, PFM, ...),
+        # and those would skip the budget. Rider photos are JPEG / PNG / WebP.
+        raise HTTPException(status_code=400, detail=f"failed_to_decode_image: {field}" if field != "image" else "failed_to_decode_image") from None
+    if w * h > MAX_IMAGE_PIXELS:
+        raise HTTPException(status_code=413, detail=f"image_too_many_pixels: {field} is {w}x{h}")
 
 # libjpeg native subsampled-decode flags — built once at import time, not per call.
 _JPEG_REDUCE_FLAGS: dict[int, int] = {
@@ -67,6 +93,7 @@ def _decode_base64_image(image_b64: str) -> np.ndarray:
 
     if not image_bytes:
         raise HTTPException(status_code=400, detail="empty_image_data")
+    _check_pixel_budget(image_bytes)
 
     try:
         nparr = np.frombuffer(image_bytes, np.uint8)
@@ -106,6 +133,7 @@ def _decode_image_bytes(raw: bytes, *, field: str, reduction: int = 0) -> np.nda
     """
     if not raw:
         raise HTTPException(status_code=400, detail=f"empty_image: {field}")
+    _check_pixel_budget(raw, field)
     flag = _JPEG_REDUCE_FLAGS.get(reduction, cv2.IMREAD_COLOR)
     image_bgr = cv2.imdecode(np.frombuffer(raw, np.uint8), flag)
     if image_bgr is None and flag != cv2.IMREAD_COLOR:
@@ -368,6 +396,18 @@ async def dresscode_check(request: Request, payload: ImagePayload, service: Dres
     batched) and a colour/logo pass — CPU/GPU-bound, so it runs in a worker
     thread and holds an inference-limiter slot like matching does.
     """
-    image_rgb = _decode_base64_image(payload.image_b64)
+    # decode in the worker thread too: a big JPEG must not stall the event loop
     async with request.app.state.inference_limiter.slot():
-        return await run_in_threadpool(service.check, image_rgb)
+        return await run_in_threadpool(lambda: service.check(_decode_base64_image(payload.image_b64)))
+
+
+@router.post("/v1/quality/check", response_model=CaptureQualityResult)
+async def quality_check(request: Request, payload: ImagePayload, service: QualityDep):
+    """Capture quality: face found / big enough / lit / sharp, T-shirt visible / sharp.
+
+    One face detection plus up to two blur-model passes (face, T-shirt), so it
+    holds an inference-limiter slot like the other model routes.
+    """
+    # decode in the worker thread too: a big JPEG must not stall the event loop
+    async with request.app.state.inference_limiter.slot():
+        return await run_in_threadpool(lambda: service.check(_decode_base64_image(payload.image_b64)))

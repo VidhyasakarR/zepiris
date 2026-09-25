@@ -25,7 +25,8 @@ class FaceMatchRequest(BaseModel):
     source_selfie_s3: str | None = None
     face_check_b64: str | None = None
     face_check_s3: str | None = None
-    threshold: float | None = None
+    # bounded + finite: a negative or NaN threshold would pass anything
+    threshold: float | None = Field(None, ge=0.05, le=0.99, allow_inf_nan=False)
 
 
 class DocMatchRequest(BaseModel):
@@ -40,7 +41,8 @@ class DocMatchRequest(BaseModel):
     source_selfie_s3: str | None = None
     doc_check_b64: str | None = None
     doc_check_s3: str | None = None
-    threshold: float | None = None
+    # bounded + finite: a negative or NaN threshold would pass anything
+    threshold: float | None = Field(None, ge=0.05, le=0.99, allow_inf_nan=False)
     doc_type: str | None = None
 
 

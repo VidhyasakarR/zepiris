@@ -150,6 +150,9 @@ class DresscodeCheckResult(BaseModel):
         engine: "siglip2" (learned classifier decides) or "hsv" (colour/logo rule).
         recommended_threshold: The threshold the classifier was calibrated at,
             or None for the colour/logo rule.
+        check_scores: Per-check model probabilities ("dress_color", "logo") from
+            the heads sharing the classifier's embedding; empty without it.
+        check_thresholds: The calibrated threshold for each entry of check_scores.
         reason: None on a normal scored result, else "roi_too_small" or
             "no_blue_region" (colour/logo rule only).
     """
@@ -162,4 +165,31 @@ class DresscodeCheckResult(BaseModel):
     uniform_score: float | None = Field(None, ge=0.0, le=1.0)
     engine: str = "hsv"
     recommended_threshold: float | None = None
+    check_scores: dict[str, float] = Field(default_factory=dict)
+    check_thresholds: dict[str, float] = Field(default_factory=dict)
     reason: str | None = None
+
+
+class CaptureQualityResult(BaseModel):
+    """Is the face — and the T-shirt — clearly visible in a captured selfie?
+
+    Attributes:
+        face_detected: A face was found at all.
+        face_width: Face-box width as a fraction of the image width.
+        face_brightness: Mean luma (0–255) of the face.
+        face_blur: Blur-model probability that the face is blurry (0–1).
+        shirt_visible: Fraction of the expected chin-to-stomach region in frame.
+        shirt_blur: Blur-model probability that the T-shirt region is blurry,
+            or None when too little of it is visible to judge.
+        issues: Machine-readable problems, empty when the photo is good:
+            face_not_found, face_too_small, too_dark, too_bright, face_blurry,
+            shirt_not_visible, shirt_blurry.
+    """
+
+    face_detected: bool
+    face_width: float | None = None
+    face_brightness: float | None = None
+    face_blur: float | None = None
+    shirt_visible: float | None = None
+    shirt_blur: float | None = None
+    issues: list[str] = Field(default_factory=list)

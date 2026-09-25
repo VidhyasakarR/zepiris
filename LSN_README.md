@@ -15,9 +15,9 @@ This file covers what LSN added and which models do what. The upstream [README.m
 | 2 | **Face match** (1:1 identity) | ArcFace `w600k_r50` (InsightFace `buffalo_l`), 512-d, cosine | ML service, onnxruntime | downloaded to `~/.insightface/models/` | ⚠️ **non-commercial research only** | Yes |
 | 3 | **Liveness / anti-spoof** (print, photo-of-screen) | MiniFASNet V2 (2.7× crop) + V1SE (4.0× crop), averaged | ML service, onnxruntime | `models/minifasnet_v2_yakhyo.onnx`, `models/minifasnet_v1se_yakhyo.onnx` | Apache-2.0 | Off. Needs `ML_SERVICE_LIVENESS_ENABLED` + `ZEPIRIS_LIVENESS_ENABLED` |
 | 4 | Liveness, screen-replay cue | Moiré / glare detector (FFT + highlights, no weights) | ML service, OpenCV | `zepiris/ml_inference/moire_detection.py` | own code | With liveness |
-| 5 | **Dress code, the decision** (is it the Loadshare uniform?) | **SigLIP2-base** image encoder + trained logistic-regression head | ML service, onnxruntime | `models/siglip2_base_vision.onnx` (built, not committed) + `zepiris/ml_inference/assets/dresscode_head.json` | Apache-2.0 (SigLIP2); head is ours | Yes, when the encoder file exists |
-| 6 | Dress code, **colour score** | HSV "Loadshare blue" coverage of the torso (no weights) | ML service, OpenCV | `dresscode_detection.py` | own code | Always reported; decides only if #5 is missing |
-| 7 | Dress code, **logo score** | Template match of the chest logo (no weights) | ML service, OpenCV | `zepiris/ml_inference/assets/loadshare_logo.png` | own code | Always reported; weak signal |
+| 5 | **Dress code: three trained heads** on one encoder pass: `dress_color` (shirt is Loadshare blue), `logo` (Loadshare print present), `uniform` (both) | **SigLIP2-base** image encoder + three logistic-regression heads | ML service, onnxruntime | `models/siglip2_base_vision.onnx` (built, not committed) + `zepiris/ml_inference/assets/{dress_color,logo,dresscode}_head.json` | Apache-2.0 (SigLIP2); heads are ours | Yes, when the encoder file exists |
+| 6 | Dress code, raw colour signal | HSV "Loadshare blue" coverage of the torso (no weights) | ML service, OpenCV | `dresscode_detection.py` | own code | Reported only (`blueCoverage`); decides only if #5 is missing |
+| 7 | Dress code, raw logo signal | Template match of the chest logo (no weights) | ML service, OpenCV | `zepiris/ml_inference/assets/loadshare_logo.png` | own code | Reported only (`logoMatch`); cannot tell logo from no logo, so never decides |
 | 8 | **Capture guide** (half-body skeleton in the UI) | MediaPipe Pose Landmarker lite | Browser (WASM/WebGL) | loaded from CDN at runtime | Apache-2.0 | Yes, in `/ui` |
 | 9 | Legacy liveness fallback | MobileNetV3-Large binary classifier | ML service, PyTorch | `models/spoof_model.pth` | ZepIris-provided | Only if the MiniFASNet files are missing |
 | 10 | NSFW check (full IQA only) | MobileNetV2 binary classifier | ML service, PyTorch | `models/nsfw_model.pth` | ZepIris-provided | Off in `face_match_only` mode |
@@ -32,48 +32,80 @@ This file covers what LSN added and which models do what. The upstream [README.m
 | `POST /v1/checkpoint/verify` | 1, 2 (face match); 1, 3, 4 (liveness, if on); 1, 5, 6, 7 (dress code). All run at the same time |
 | `POST /v1/faces/facematch/verify` | 1, 2; plus 1, 3, 4 when liveness is on |
 | `POST /v1/dresscode/match` | 1, 5, 6, 7 |
-| `GET /ui` | 8 in the browser; calls `/v1/checkpoint/verify` |
+| `GET /ui` | Operator page: 8 in the browser; calls `/v1/checkpoint/verify` |
+| `POST /ui/selfie` | Rider selfie page (full screen): 8 in the browser; calls `/v1/checkpoint/verify` with the POSTed config |
 
 Detection (#1) anchors everything: the face box locates the face for liveness and the torso for dress code. A face that fills the frame, cut off at the forehead or chin, is found with a padded retry.
 
 ---
 
-## The checkpoint endpoint
+## The checkpoint endpoint: the caller picks the checks
 
-`POST /v1/checkpoint/verify` has the same body as `/v1/faces/facematch/verify`. Each side is **either an image (base64 or `data:` URI) or an S3/HTTP link**:
+`POST /v1/checkpoint/verify` accepts a `checks` list naming what to verify on the live selfie:
 
-```json
-{
-  "face_check_b64":   "<live selfie, base64>",
-  "face_check_s3":    "https://… (instead of face_check_b64)",
-  "source_selfie_b64":"<enrolled selfie, base64>",
-  "source_selfie_s3": "https://… (instead of source_selfie_b64)",
-  "threshold": 0.5,
-  "dresscode_threshold": 0.35
-}
+| Check | What passes it | Needs `source_selfie_*`? |
+|---|---|---|
+| `face_match` | Same person as the enrolled selfie (and live, when `ZEPIRIS_LIVENESS_ENABLED`) | **yes** |
+| `dress_color` | Shirt is Loadshare blue | no |
+| `logo` | Loadshare print (chest logo or wordmark) is on the shirt | no |
+
+Rules:
+- **Only the listed checks run.** Face-only never calls the dress-code model; dress-only needs no source and never runs face match.
+- `checks` omitted means all three. `[]` or an unknown name returns 422.
+- **`isCleared` is true only when every requested check passes.**
+- Each image is **either** base64 (`*_b64`, bare or `data:` URI) **or** a link (`*_s3`), never both.
+- Threshold overrides (`threshold` for face, `dress_color_threshold`, `logo_threshold`) are refused with 403 unless `ZEPIRIS_ALLOW_THRESHOLD_OVERRIDE=true`, which is for testing only. They are always limited to 0.05–0.99.
+
+### Examples
+
+All three checks: selfie as base64, enrolled selfie as an S3 link.
+```bash
+curl -s -X POST http://localhost:8000/v1/checkpoint/verify -H 'Content-Type: application/json' -d '{"face_check_b64":"<BASE64_SELFIE>","source_selfie_s3":"https://bucket.s3.amazonaws.com/rider-123.jpg","checks":["face_match","dress_color","logo"]}'
 ```
 
-`threshold` and `dresscode_threshold` are optional. The response looks like this:
+Face match + dress colour only (logo ignored).
+```bash
+curl -s -X POST http://localhost:8000/v1/checkpoint/verify -H 'Content-Type: application/json' -d '{"face_check_s3":"https://bucket.s3.amazonaws.com/live.jpg","source_selfie_s3":"https://bucket.s3.amazonaws.com/rider-123.jpg","checks":["face_match","dress_color"]}'
+```
 
+Face match only.
+```bash
+curl -s -X POST http://localhost:8000/v1/checkpoint/verify -H 'Content-Type: application/json' -d '{"face_check_b64":"<BASE64_SELFIE>","source_selfie_b64":"<BASE64_ENROLLED>","checks":["face_match"]}'
+```
+
+Dress colour + logo only (no source needed).
+```bash
+curl -s -X POST http://localhost:8000/v1/checkpoint/verify -H 'Content-Type: application/json' -d '{"face_check_s3":"https://bucket.s3.amazonaws.com/live.jpg","checks":["dress_color","logo"]}'
+```
+
+From image files on disk (Linux `base64 -w0`; on macOS use `base64 -i file`):
+```bash
+printf '{"face_check_b64":"%s","source_selfie_b64":"%s","checks":["face_match","dress_color","logo"]}' "$(base64 -w0 selfie.jpg)" "$(base64 -w0 enrolled.jpg)" > body.json && curl -s -X POST http://localhost:8000/v1/checkpoint/verify -H 'Content-Type: application/json' -d @body.json
+```
+
+### Response
 ```json
 {
   "requestId": "…",
-  "isCleared": true,
-  "scores": {
-    "faceMatch": 0.95, "faceThreshold": 0.5, "liveness": 0.99,
-    "uniform": 0.91, "dressColour": 0.66, "logo": 0.50,
-    "dresscode": 0.91, "dresscodeThreshold": 0.35
+  "checksRequested": ["face_match", "dress_color", "logo"],
+  "isCleared": false,
+  "checks": {
+    "face_match":  {"passed": true,  "score": 0.998, "threshold": 0.5, "liveness": 0.99, "livenessFailed": false, "faceDetected": true},
+    "dress_color": {"passed": true,  "score": 0.985, "threshold": 0.38},
+    "logo":        {"passed": false, "score": 0.032, "threshold": 0.40}
   },
-  "faceMatch": { "…same block as /facematch/verify…" },
-  "dresscode": { "isMatch": true, "engine": "siglip2", "…": "…" }
+  "faceMatch": { "…full /facematch/verify block, only when face_match ran…" },
+  "dresscode": { "…full /dresscode/match block, only when a dress check ran…" }
 }
 ```
 
-- `isCleared` is true only when the face matches (and passes liveness, if on) **and** the uniform matches.
-- `scores.uniform` is the trained model's decision score. `dressColour` and `logo` are supporting signals.
-- `dresscode.engine` is `"siglip2"` when the trained model decided, and `"hsv"` when the service fell back to the colour/logo rule.
+`checks` holds only the checks that were requested. Errors:
 
----
+| Status | Cause |
+|---|---|
+| 400 | `face_match` requested without `source_selfie_*`, or both `_b64` and `_s3` given for one image |
+| 422 | Empty or unknown `checks` |
+| 503 | Dress check requested but the SigLIP2 model isn't loaded on the ML service, or liveness is on but its model is missing |
 
 ## Dress-code model: how it was chosen and trained
 
@@ -89,6 +121,7 @@ Detection (#1) anchors everything: the face box locates the face for liveness an
 | DINOv2 + head | 84% | 98% | 83–100% | 0.965 |
 | SigLIP2 + DINOv2 | 97% | 100% | 100% | 0.999 (no gain, 2× compute) |
 
+- **Per-check heads (same data, same rider-grouped test):** `dress_color` scored AUC 1.000 and 99.7% balanced accuracy at threshold 0.38, beating the HSV coverage (AUC 0.989). `logo` scored AUC 0.999 and 98.7% at threshold 0.40. The logo head saw the print on red, green, grey and black shirts and plain blue shirts without it, so it learned the print independently of the colour.
 - **Operating threshold:** 0.35, chosen on held-out scores. At that setting 99.5% of real uniforms are accepted and 99.7% of non-uniform images are rejected.
 - **Input views:** the whole frame plus a face-anchored chest-to-stomach crop, embedded in one batch and concatenated (2 × 768 → head).
 - **Preprocessing must be PIL bilinear 224×224 scaled to [-1, 1].** cv2 resizing shifted the embeddings to cosine ≈ 0.91 of the trained ones.
@@ -108,6 +141,98 @@ This writes `models/siglip2_base_vision.onnx`, which is gitignored. Bake it into
 
 ---
 
+## Rider selfie page (`POST /ui/selfie`)
+
+A full-screen camera page for riders. It is opened with a **POST**, as a form or JSON, whose body carries the checkpoint config. Nothing goes in the URL and nothing is configurable on screen.
+
+| Field | Meaning |
+|---|---|
+| `checks` | Comma list or array of `face_match`, `dress_color`, `logo` (default: all) |
+| `source_selfie_s3` / `source_selfie_b64` | The enrolled selfie; one of them is required for `face_match` |
+| `zoom` | Camera zoom-out, `0.75` / `0.8` / `0.9` / `1` (default `0.75`). Chips on screen let the rider change it |
+| `challenge` | Liveness challenge before Capture unlocks: `blink` (default), `turn`, `random` or `none` |
+| `threshold`, `dress_color_threshold`, `logo_threshold` | Pass-mark overrides. **Refused (403) unless `ZEPIRIS_ALLOW_THRESHOLD_OVERRIDE=true`**, and always limited to 0.05–0.99 |
+
+The page only talks to the server that served it; there is no API-address parameter, so another website can't point it elsewhere.
+
+How the page behaves:
+- **No auto-capture.** The outline turns green when the face is in the oval and the T-shirt is framed; only then is **Capture** enabled.
+- **Live face checks before Capture (MediaPipe Face Landmarker, on the phone).** In priority order, the rider sees:
+
+  | Condition | Prompt |
+  |---|---|
+  | No face | "Look at the camera" |
+  | More than one face | "Only one person in the frame" |
+  | Face overexposed (luma above 225) | "Too bright" |
+  | Scene bright, face dark | "Light is behind you" |
+  | Head turned | "Look straight at the camera" |
+  | Head tilted | "Keep your head level" |
+  | Eyes closed | "Open your eyes" |
+  | Moving | "Hold still" |
+
+  Calibration: on 18 real rider selfies, yaw stayed within ±0.08 (limit 0.11), pitch within ±0.09 (limit 0.12), and eye-closed peaked at 0.25 (limit 0.5).
+- **Liveness challenge.** Once the rider is framed, the page asks for a blink, or a head turn and back. Capture stays locked until it is done, and it resets if the face leaves the frame. A printed photo or a still picture can't pass it.
+  - It is a barrier on the phone, not proof. Server-side passive liveness (MiniFASNet, `ZEPIRIS_LIVENESS_ENABLED`) still decides.
+  - **If the face models can't load (CDN blocked, bad network), the page fails closed.** It shows "Couldn't load the face check" with a retry, instead of skipping the challenge.
+  - Two faces in the frame reset the challenge, so it can't be handed from one person to another.
+- **Blur check right after capture.** The page measures sharpness on the face using the Crété-Roffet blur metric, in the browser, instantly. If it scores over **0.65**, it shows **"Photo is blurry — retake it, or the checks may fail"**, with Retake as the main button and "Submit anyway" as the other.
+  - **Calibration:** the 19 genuine rider selfies score 0.31–0.48.
+  - **Live test:** the warning started one blur step before the logo check began failing, and every capture that went on to fail had been warned. The logo is small print, so it's the first check to break on a soft photo.
+- **Low light.** While the camera runs, the page measures the face's brightness. Below a mean luma of 90 it shows "💡 Low light — the screen will flash", and on Capture the whole screen turns white for 0.8–1.8 s to light the face. It waits for the camera to adjust its exposure and keeps the brightest frame.
+  - A photo that's still dim (face under 110) is gamma-brightened before sending.
+  - A face under 45 gets **"Too dark to see your face — move to a brighter place and retake"**. The blur check isn't trusted there, because in the dark it reads sensor noise as detail.
+  - The Android app also turns screen brightness to full while the selfie page is open, so the flash really lights the face.
+- **Burst capture.** Capture takes 5 frames in about 0.3 s and keeps the sharpest face, since motion blur varies frame to frame. In low light it keeps the sharpest of the brightest frames.
+- **Capture quality check (`POST /v1/quality/check`).** This runs right after capture, using the ResNet-18 blur model on the face and on the T-shirt. The rider sees warnings such as "Face is blurry", "T-shirt is blurry", "T-shirt not visible", "Too dark" or "Face too far", with Retake as the main button and "Submit anyway" as the other.
+  - **Face blur (threshold 0.5):** it caught 98% of blurred faces, including 94% in low light, while flagging 8% of sharp ones (AUC 0.994). This was measured on rider photos with focus, motion and defocus blur, half of them also dark and noisy.
+  - **T-shirt blur (threshold 0.95):** it caught 75% with 2% false flags. The bar is stricter because plain fabric looks soft to the model.
+  - **The old in-browser metric** had rated the real blurry dark captures "sharp". It remains only as a fallback when the server can't be reached; the check times out after 6 s.
+  - **Light is judged on the photo as the camera took it.** The page sends the pre-brightening image here; judged after brightening, every dark photo would pass. A face overexposed above 230 gets "Too bright".
+- **Robustness.**
+  - Switching apps or locking the screen releases the camera, and it reopens when the rider returns.
+  - A camera that stops is reported with a way to restart it.
+  - A change in camera resolution re-fits the outline.
+  - A failed capture never leaves the white flash on screen.
+  - Retake is disabled while Submit is running, and replies that arrive for an older photo are ignored.
+  - Server text is always inserted as text, never as HTML.
+- **Submit** sends the **captured photo** (`face_check_b64`) plus the config above in the body of `POST /v1/checkpoint/verify`, then shows the result.
+- **Zoom:** a web page can't widen the lens. Filling a tall phone screen crops the camera picture, and zooming out (0.75×) crops less, showing more of the camera's real view. The guide, the skeleton and the saved photo all use the visible part of the picture.
+- **Host apps:** the page posts the result to a `ZepirisBridge` JavaScript channel, which the Android app listens on.
+
+```bash
+curl -s -X POST https://<host>/ui/selfie -d 'checks=face_match,dress_color,logo' -d 'source_selfie_s3=https://bucket.s3.amazonaws.com/rider.jpg' -d 'zoom=0.75'
+```
+
+## Android app (`mobile/lsn_checkpoint`)
+
+The flow is **Config → selfie page → result**.
+
+1. **Config screen:** the API address, which checks to run, the camera size (zoom 0.75× / 0.8× / 0.9× / 1×), the liveness check (blink / head turn / random / off), and the enrolled selfie (S3 link, or an image from the gallery, copied into app storage). These are saved on the phone.
+2. **Open selfie:** loads the server's `/ui/selfie` in a full-screen WebView, POSTing that config. It's the same page as on the web, so the guide, zoom, green-to-capture and Submit behave identically.
+3. **Result:** the page shows it, and the app shows a Cleared / Not cleared chip.
+
+Build:
+```bash
+cd mobile/lsn_checkpoint && flutter build apk --release
+```
+
+This writes `build/app/outputs/flutter-apk/app-release.apk`. Install it:
+```bash
+adb install -r mobile/lsn_checkpoint/build/app/outputs/flutter-apk/app-release.apk
+```
+
+Notes:
+- **The API address must be https** (for example the ngrok link), because WebView cameras only work on secure pages.
+- The WebView uses a non-browser user agent so ngrok's free-tier "Visit site" warning page doesn't interrupt it.
+- **WebView lock-down:**
+  - Only the configured server's pages get the camera (never the microphone).
+  - Only its `/ui/selfie` page may report a result.
+  - Links and redirects to any other host are blocked.
+  - Server errors on opening the page (403/413/422/5xx) show a readable message.
+  - When the app goes to the background, the page is told to release the camera, and it reopens on return.
+- **The Cleared / Not cleared chip is a display.** The checkpoint decision is the server's response to `/v1/checkpoint/verify`. Anything that grants access should use that response, not the chip.
+- The release build is signed with the debug key; set up a real signing key before distributing.
+
 ## Configuration added by LSN
 
 | Variable | Service | Default | Meaning |
@@ -118,7 +243,15 @@ This writes `models/siglip2_base_vision.onnx`, which is gitignored. Bake it into
 | `ML_SERVICE_DRESSCODE_CLASSIFIER_ENABLED` | ML | `true` | Use the SigLIP2 uniform classifier when the encoder exists |
 | `ML_SERVICE_DRESSCODE_ENCODER_PATH` | ML | `/app/models/siglip2_base_vision.onnx` | Falls back to `./models/<name>` on native runs |
 | `ML_SERVICE_DRESSCODE_HEAD_PATH` | ML | *(bundled asset)* | Override the trained head JSON |
+| `ML_SERVICE_QUALITY_CHECK_ENABLED` | ML | `true` | Load the blur model (`models/blur_model.pth`) for `/v1/quality/check`, even in face-match-only mode |
+| `ZEPIRIS_ALLOW_THRESHOLD_OVERRIDE` | API | `false` | Accept per-request pass marks on `/v1/checkpoint/verify` and `/ui/selfie`. Keep it off in production: a device could otherwise clear itself |
+| `ZEPIRIS_IMAGE_URL_BLOCK_PRIVATE` | API | `true` | Refuse image URLs (`*_s3`) that resolve to loopback / private / link-local addresses (the ML service, cloud metadata `169.254.169.254`, the VPC). Checked on every redirect hop. Set `false` only for local testing against a LAN file server |
+| `ZEPIRIS_IMAGE_URL_ALLOWED_HOSTS` | API | *(empty = any public host)* | Comma list of allowed image hosts, exact or `.suffix`, e.g. `.amazonaws.com`. Recommended in production |
 | `ZEPIRIS_DRESSCODE_THRESHOLD` | API | *(unset)* | Unset uses the engine's calibrated threshold: 0.35 for the model, 0.55 for the rule |
+
+Images over 50 megapixels are refused with 413 before they are decoded. That includes images past Pillow's own bomb limit, and files whose size can't be read are refused rather than passed to OpenCV. This stops a small, highly compressed file from expanding to gigabytes in memory. Decoding runs off the event loop. Image URLs are downloaded as a stream and cut off at 5 MB.
+
+Every `threshold` field is limited to 0.05–0.99 and must be finite, on the older `/v1/faces/*` and `/v1/dresscode/match` endpoints too. A negative threshold would otherwise pass anything.
 
 ## Run locally
 
