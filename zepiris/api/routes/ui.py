@@ -115,6 +115,8 @@ def _selfie_config(raw: dict, allow_threshold_override: bool = False) -> dict:
         if challenge not in _CHALLENGES:
             raise HTTPException(status_code=422, detail=f"challenge must be one of {list(_CHALLENGES)}")
         cfg["challenge"] = challenge
+    if str(raw.get("show_scores") or "").strip().lower() in ("1", "true", "yes", "on"):
+        cfg["show_scores"] = True  # testing: list the raw scores after submit
     # No "api" parameter: the page only ever talks to the server that served it,
     # so a third-party form POST cannot point the capture (and the enrolled
     # selfie) at another host.

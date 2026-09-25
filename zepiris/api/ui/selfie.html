@@ -180,7 +180,7 @@ $("submitBtn").addEventListener("click", async () => {
   if (!selfie || submitting) return;
   const mine = attempt;
   const body = { face_check_b64: selfie, checks: cfg.checks };
-  for (const k of ["source_selfie_s3", "source_selfie_b64", "threshold", "dress_color_threshold", "logo_threshold"]) {
+  for (const k of ["source_selfie_s3", "source_selfie_b64"]) {
     if (cfg[k] !== undefined) body[k] = cfg[k];
   }
   submitting = true; $("retakeBtn").disabled = true;
@@ -188,7 +188,8 @@ $("submitBtn").addEventListener("click", async () => {
   const ctl = typeof AbortController === "function" ? new AbortController() : null;
   const timer = ctl && setTimeout(() => ctl.abort(), 30000);
   try {
-    const r = await fetch(`/v1/checkpoint/verify`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctl?.signal });
+    // scores only: the host app's backend decides pass / fail later
+    const r = await fetch(`/v1/checkpoint/score`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctl?.signal });
     let d = null; try { d = await r.json(); } catch (_) {}
     if (!r.ok) {
       const det = d && (d.detail || d);
@@ -208,24 +209,22 @@ $("submitBtn").addEventListener("click", async () => {
   }
 });
 
+// No verdict on the rider's screen: the scores go to the host app, whose
+// backend decides. With show_scores (testing) the raw numbers are listed.
 function render(d) {
-  const rows = Object.entries(d.checks).map(([k, c]) => {
-    const extra = k === "face_match" && c.livenessFailed ? " · not live" : k === "face_match" && c.faceDetected === false ? " · no face" : "";
-    const num = (v) => (typeof v === "number" && isFinite(v) ? v.toFixed(2) : "—");
-    return `<div class="row"><span class="name">${esc(LABEL[k] || k)}</span>
-      <span class="score">${num(c.score)} / ${num(c.threshold)}${extra}</span>
-      <span class="chip ${c.passed ? "pass" : "fail"}">${c.passed ? "✓ PASS" : "✕ FAIL"}</span></div>`;
-  }).join("");
-  const failed = Object.entries(d.checks).filter(([, c]) => !c.passed).map(([k]) => LABEL[k] || k);
-  $("result").innerHTML = `<div class="overall ${d.isCleared ? "pass" : "fail"}">${d.isCleared ? "✓ Cleared" : "✕ Not cleared"}</div>
-    <div style="color:var(--muted);font-size:13px;margin-bottom:6px">${d.isCleared ? "All checks passed" : esc(failed.join(", ")) + " failed — retake to try again"}</div>${rows}
-    <div class="bar" style="margin-top:12px"><button class="act" id="againBtn">Retake</button></div>`;
-  $("result").innerHTML = `<div class="sheet-inner">${$("result").innerHTML}</div>`;
+  const num = (v) => (typeof v === "number" && isFinite(v) ? v.toFixed(2) : "—");
+  const rows = cfg?.show_scores ? Object.entries(d.scores || {}).map(([k, v]) => {
+    const val = k === "face_match" ? `similarity ${num(v.similarity)} · liveness ${num(v.liveness)}` : num(v.score);
+    return `<div class="row"><span class="name">${esc(LABEL[k] || k)}</span><span class="score">${esc(val)}</span><span></span></div>`;
+  }).join("") : "";
+  $("result").innerHTML = `<div class="sheet-inner"><div class="overall pass">✓ Photo submitted</div>
+    <div style="color:var(--muted);font-size:13px;margin-bottom:6px">Reference ${esc(d.requestId || "")}</div>${rows}
+    <div class="bar" style="margin-top:12px"><button class="act" id="againBtn">Retake</button></div></div>`;
   $("result").hidden = false;
   $("dock").hidden = true;
   $("againBtn").addEventListener("click", () => $("retakeBtn").click());
-  // Let a host app (Android WebView) read the outcome.
-  bridge({ type: "checkpoint_result", result: d });
+  // The host app (Android WebView) gets the scores and the exact photo sent.
+  bridge({ type: "checkpoint_scores", result: d, photo: selfie });
   $("note").textContent = "";
 }
 

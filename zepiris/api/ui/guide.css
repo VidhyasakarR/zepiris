@@ -4,7 +4,7 @@
    outline over the visible part. */
 .stage { position: relative; aspect-ratio: 3 / 4; max-height: var(--stage-max-h, 76vh); margin: 0 auto; border-radius: 14px; overflow: hidden; background: #05080f; }
 .stage video, .stage > img.shot { position: absolute; object-fit: fill; }
-.stage video { transform: scaleX(-1); } /* mirror like a mirror; the captured photo is not */
+.stage video { transform: scaleX(-1); } /* mirror like a mirror; the captured photo is saved mirrored too (as seen) */
 .stage .content { position: absolute; inset: 0; pointer-events: none; }
 .stage .content svg { position: absolute; inset: 0; width: 100%; height: 100%; }
 .stage .skeleton { transform: scaleX(-1); }

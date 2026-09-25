@@ -40,8 +40,17 @@ test("geometry scales with the visible picture's shape", () => {
 });
 
 // ---- face metrics -----------------------------------------------------------
-const faceRes = ({ yaw = 0, blinkL = 0.1, blinkR = 0.1, faces = 1 }) => {
+const faceRes = ({ yaw = 0, blinkL = 0.1, blinkR = 0.1, faces = 1, openL = null, openR = null }) => {
   const lm = Array.from({ length: 478 }, () => ({ x: 0.5, y: 0.5 }));
+  // eyelid outline (only when a test sets openness 0..1): width 0.04, open height 0.012
+  const eye = (open, cx, [up1, lo1, up2, lo2, c1, c2]) => {
+    const h = 0.012 * open;
+    lm[c1] = { x: cx - 0.02, y: 0.4 }; lm[c2] = { x: cx + 0.02, y: 0.4 };
+    lm[up1] = { x: cx, y: 0.4 - h / 2 }; lm[lo1] = { x: cx, y: 0.4 + h / 2 };
+    lm[up2] = { x: cx + 0.008, y: 0.4 - h / 2 }; lm[lo2] = { x: cx + 0.008, y: 0.4 + h / 2 };
+  };
+  if (openL != null) eye(openL, 0.46, [159, 145, 158, 153, 33, 133]);
+  if (openR != null) eye(openR, 0.54, [386, 374, 385, 380, 362, 263]);
   lm[234] = { x: 0.40, y: 0.45 }; lm[454] = { x: 0.60, y: 0.45 };   // cheeks: face 0.2 wide
   lm[1] = { x: 0.50 + yaw * 0.2, y: 0.46 };                            // nose tip
   lm[10] = { x: 0.5, y: 0.30 }; lm[152] = { x: 0.5, y: 0.60 };         // forehead, chin
@@ -89,6 +98,26 @@ test("blink: one frame of it is enough (fast blink)", () =>
   assert.equal(run("blink", [eyes(0.1), eyes(0.6), eyes(0.1)]), true));
 test("blink: a wink still does not count", () =>
   assert.equal(run("blink", [eyes(0.1), eyes(0.9, 0.12), eyes(0.1), eyes(0.1, 0.85), eyes(0.1)]), false));
+
+// ---- eyelid signal: works when the blink score stays flat (glasses) --------
+const lids = (l, r = l) => ({ blinkL: 0.1, blinkR: 0.1, openL: l, openR: r });
+test("eyelids: a blink with a flat blink score (glasses) passes", () =>
+  assert.equal(run("blink", [lids(1), lids(1), lids(0.95), lids(0.2), lids(0.95)]), true));
+test("eyelids: one closed frame of a fast blink is enough", () =>
+  assert.equal(run("blink", [lids(1), lids(0.4), lids(1)]), true));
+test("eyelids: a still photo never passes", () => assert.equal(run("blink", Array(60).fill(lids(1))), false));
+test("eyelids: jitter of ±15% never passes", () => {
+  const f = []; for (let i = 0; i < 200; i++) f.push(lids(0.85 + 0.3 * ((i * 37) % 11) / 10, 0.85 + 0.3 * ((i * 53) % 7) / 6));
+  assert.equal(run("blink", f), false);
+});
+test("eyelids: a wink does not count", () =>
+  assert.equal(run("blink", [lids(1), lids(0.1, 1), lids(1), lids(1, 0.1), lids(1)]), false));
+test("eyelids: eyes that stay shut do not pass", () =>
+  assert.equal(run("blink", [lids(1), lids(0.1), lids(0.1), lids(0.15)]), false));
+test("faceMetrics: eyelid openness is height / width", () => {
+  const m = G.faceMetrics(faceRes({ openL: 1, openR: 0.5 }));
+  assert.ok(Math.abs(m.earL - 0.3) < 1e-6 && Math.abs(m.earR - 0.15) < 1e-6);
+});
 
 // ---- the capture loop's gate: the challenge only steps when there is no problem
 const loop = (type, frames) => {

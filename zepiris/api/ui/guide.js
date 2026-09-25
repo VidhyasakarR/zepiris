@@ -246,6 +246,13 @@ function brighten(canvas, mean) {
   return gamma;
 }
 
+/** The capture as the rider saw it in the (mirrored) preview. */
+function asSeen(canvas) {
+  const k = document.createElement("canvas"); k.width = canvas.width; k.height = canvas.height;
+  const g = k.getContext("2d"); g.translate(k.width, 0); g.scale(-1, 1); g.drawImage(canvas, 0, 0);
+  return k;
+}
+
 /** A full-viewport white overlay: the phone screen lights the rider's face. */
 function screenFlash() {
   const el = document.createElement("div");
@@ -283,16 +290,26 @@ export const STILL_PX = 0.012, STILL_MS = 450;      // nose travel (fraction of 
 const FACE_LOST_RESET_MS = 1200;                     // face gone this long → the challenge must be redone
 
 /** Per-frame face metrics from a FaceLandmarker result (null when no face). */
+function eyeOpenness(f, up1, lo1, up2, lo2, c1, c2) {
+  const d = (a, b) => (f[a] && f[b] ? Math.hypot(f[a].x - f[b].x, f[a].y - f[b].y) : 0);
+  const w = d(c1, c2);
+  return w > 1e-6 ? (d(up1, lo1) + d(up2, lo2)) / (2 * w) : null;
+}
+
 export function faceMetrics(res) {
   const f = res?.faceLandmarks?.[0];
   if (!f) return null;
   const bs = Object.fromEntries((res.faceBlendshapes?.[0]?.categories || []).map((c) => [c.categoryName, c.score]));
   const l = bs.eyeBlinkLeft ?? 0, r = bs.eyeBlinkRight ?? 0;
   const L = f[234], R = f[454], N = f[1], T = f[10], B = f[152]; // cheeks, nose tip, forehead, chin
+  const earL = eyeOpenness(f, 159, 145, 158, 153, 33, 133), earR = eyeOpenness(f, 386, 374, 385, 380, 362, 263);
   return {
     count: res.faceLandmarks.length,
     eyesClosed: Math.min(l, r),    // both eyes shut (a blink)
     eyeClosed: Math.max(l, r),     // at least one eye shut
+    // eye openness from the eyelid outline (height / width), a second blink
+    // signal that does not fade behind glasses as the blink score can
+    earL, earR,
     yaw: (N.x - L.x) / Math.max(1e-6, R.x - L.x) - 0.5,
     pitch: (N.y - T.y) / Math.max(1e-6, B.y - T.y) - 0.54,
     nose: { x: N.x, y: N.y },
@@ -347,6 +364,69 @@ function loadFaceLandmarker() {
   return faceLmPromise;
 }
 
+// ---- face model on its own thread ------------------------------------------
+// On a mid-range phone the face model takes ~70 ms a frame and pose ~45 ms;
+// run one after the other on the page's thread that is ~120 ms a tick: 6 face
+// readings a second (a 150 ms blink is often missed) and 4 pose readings (the
+// outline lags). The face model runs in a Web Worker instead, in parallel with
+// pose: ~13 face readings a second and pose every frame. Frames go over as
+// small ImageBitmaps; only the few numbers faceMetrics() needs come back.
+const FACE_INPUT_W = 480;
+const FACE_WORKER_SRC = `
+let lm = null, faceMetrics = null;
+self.onmessage = async (e) => {
+  const d = e.data;
+  if (d.init) {
+    try {
+      const [{ FilesetResolver, FaceLandmarker }, g] = await Promise.all([import(d.bundle), import(d.guide)]);
+      faceMetrics = g.faceMetrics;
+      const files = await FilesetResolver.forVisionTasks(d.wasm);
+      const opts = (delegate) => ({ baseOptions: { modelAssetPath: d.model, delegate }, runningMode: "VIDEO",
+        numFaces: 2, outputFaceBlendshapes: true });
+      // CPU: as fast as GPU for this model on phones, and no WebGL needed off the page.
+      try { lm = await FaceLandmarker.createFromOptions(files, opts("CPU")); }
+      catch (_) { lm = await FaceLandmarker.createFromOptions(files, opts("GPU")); }
+      const c = new OffscreenCanvas(128, 128); c.getContext("2d").fillRect(0, 0, 128, 128);
+      try { lm.detectForVideo(c, 1); } catch (_) {}   // warm-up; ts 1 stays below the page clock
+      self.postMessage({ ready: true });
+    } catch (err) { self.postMessage({ ready: false, error: String(err) }); }
+    return;
+  }
+  if (d.frame) {
+    let face = null;
+    try { face = faceMetrics(lm.detectForVideo(d.frame, d.ts)); } catch (_) {}
+    try { d.frame.close(); } catch (_) {}
+    self.postMessage({ face, ts: d.ts });
+  }
+};`;
+
+let faceWorkerPromise = null;
+function loadFaceWorker() {
+  faceWorkerPromise = faceWorkerPromise || new Promise((resolve, reject) => {
+    if (typeof Worker !== "function" || typeof createImageBitmap !== "function" || typeof OffscreenCanvas !== "function") {
+      reject(new Error("no worker support")); return;
+    }
+    // A classic worker, not a module one: MediaPipe loads its WebAssembly with
+    // importScripts(), which module workers lack (import() still works here).
+    const w = new Worker(URL.createObjectURL(new Blob([FACE_WORKER_SRC], { type: "text/javascript" })));
+    const t = setTimeout(() => { w.terminate(); reject(new Error("face worker timed out")); }, GPU_SETUP_MS + CPU_SETUP_MS);
+    w.onmessage = (e) => {
+      if (e.data?.ready === undefined) return;
+      clearTimeout(t);
+      if (e.data.ready) resolve(w); else { w.terminate(); reject(new Error(e.data.error)); }
+    };
+    w.onerror = (e) => { clearTimeout(t); w.terminate(); reject(new Error(e.message || "face worker failed")); };
+    w.postMessage({ init: true, bundle: MP_BUNDLE, wasm: MP_WASM, model: MP_FACE_MODEL, guide: new URL(import.meta.url).href });
+  });
+  faceWorkerPromise.catch(() => { faceWorkerPromise = null; });
+  return faceWorkerPromise;
+}
+
+/** The face model: in a worker when the browser allows, else on the page. */
+function loadFace() {
+  return loadFaceWorker().then((worker) => ({ worker }), () => loadFaceLandmarker().then((lm) => ({ lm })));
+}
+
 /**
  * What is wrong with the live face right now, in priority order; null = all good.
  * `face` is faceMetrics() output (null = no face), `challenge` a createChallenge(),
@@ -368,7 +448,8 @@ export function liveFaceProblem(face, { light = {}, challenge, noseTrail = [] })
   return null;
 }
 
-const CHALLENGE_TEXT = { blink: "Blink your eyes", turn: "Turn your head to one side, then back" };
+// "3 times, quickly": several blinks give the camera several chances; one is enough to pass.
+const CHALLENGE_TEXT = { blink: "Blink 3 times, quickly", turn: "Turn your head to one side, then back" };
 
 /**
  * Active liveness challenge state machine. `step(face)` takes one frame's
@@ -383,20 +464,34 @@ const CHALLENGE_TEXT = { blink: "Blink your eyes", turn: "Turn your head to one 
 // back within BLINK_REOPEN of it. A still photo never rises; a wink raises only
 // one eye (the less-closed eye is what is compared).
 export const BLINK_RISE = 0.2, BLINK_MIN_CLOSED = 0.3, BLINK_REOPEN = 0.1;
+// Eye openness (eyelid height / width) against the rider's open level: closed
+// when both eyes fall under BLINK_EAR_CLOSED of it, open again above BLINK_EAR_OPEN.
+export const BLINK_EAR_CLOSED = 0.6, BLINK_EAR_OPEN = 0.8;
 
 export function createChallenge(type) {
-  const c = { type, phase: 0, done: type === "none", base: null };
-  c.reset = () => { c.phase = 0; c.done = c.type === "none"; c.base = null; };
+  const c = { type, phase: 0, done: type === "none", base: null, earBase: null };
+  c.reset = () => { c.phase = 0; c.done = c.type === "none"; c.base = null; c.earBase = null; };
   c.closedAt = () => Math.min(EYES_CLOSED, Math.max(BLINK_MIN_CLOSED, (c.base ?? 0) + BLINK_RISE));
   c.step = (face) => {
     if (c.done || !face) return c.done;
     if (c.type === "blink") {
+      // Two independent signals; either one seeing the eyes shut starts a blink,
+      // and it counts once both agree they are open again.
       const both = face.eyesClosed, either = face.eyeClosed;
+      const ear = face.earL != null && face.earR != null
+        ? { max: Math.max(face.earL, face.earR), min: Math.min(face.earL, face.earR), mean: (face.earL + face.earR) / 2 } : null;
       if (c.base === null) c.base = both;
+      if (ear && c.earBase === null) c.earBase = ear.mean;
       if (c.phase === 0) {
-        if (both >= c.closedAt()) c.phase = 1;
-        else c.base = 0.85 * c.base + 0.15 * both;   // follow the open level (lighting, squint)
-      } else if (either <= Math.max(EYES_OPEN, c.base + BLINK_REOPEN)) {
+        const blendShut = both >= c.closedAt();                            // both eyes' blink scores up
+        const earShut = !!ear && ear.max <= c.earBase * BLINK_EAR_CLOSED;  // both eyelids down
+        if (blendShut || earShut) c.phase = 1;
+        else {
+          c.base = 0.85 * c.base + 0.15 * both;   // follow the open level (lighting, squint)
+          if (ear) c.earBase = 0.85 * c.earBase + 0.15 * ear.mean;
+        }
+      } else if (either <= Math.max(EYES_OPEN, c.base + BLINK_REOPEN)
+          && (!ear || ear.min >= c.earBase * BLINK_EAR_OPEN)) {
         c.done = true;
       }
     } else if (c.type === "turn") {
@@ -428,7 +523,7 @@ function loadLandmarker() {
  * Resolves true when both loaded.
  */
 export async function preload() {
-  const r = await Promise.allSettled([loadLandmarker(), loadFaceLandmarker()]);
+  const r = await Promise.allSettled([loadLandmarker(), loadFace()]);
   return r.every((x) => x.status === "fulfilled");
 }
 
@@ -482,7 +577,13 @@ export function createCapture(stage, options = {}) {
   let ready = false, geo = null, lay = null, lastPts = null;
   let lowLight = false, lastLightTs = 0, capturing = false, alignedTs = 0, starting = null, pausedByHide = false;
   let gen = 0; // bumped by stop(): a start() that was overtaken gives up after its next await
+  // faceLm: {worker} (face model on its own thread) or {lm} (on the page)
   let faceLm = null, faceFailed = false, face = null, faceSeenTs = 0, tick = 0, poseLm = null;
+  // frames queued at the face thread (≤ FACE_QUEUE) and when the last reply came
+  let faceInFlight = 0, faceReplyTs = 0;
+  const FACE_QUEUE = 2; // two queued: the thread starts the next as it finishes one
+  // readings so far, for tuning on a device (window.__zepirisCamStats)
+  const camStats = (globalThis.__zepirisCamStats = globalThis.__zepirisCamStats || { face: 0, pose: 0, worker: false });
   let light = { tooBright: false, backlit: false };
   const noseTrail = []; // {t, x, y} over the last STILL_MS
   const challenge = createChallenge(challengeType);
@@ -567,6 +668,37 @@ export function createCapture(stage, options = {}) {
     if (challenge.step(face)) { noseTrail.length = 0; onChallenge({ type: challenge.type, done: true }); }
   }
 
+  // Queue a frame at the face thread (the loop and every reply top it up).
+  function sendFaceFrame() {
+    if (!faceLm?.worker || !video || video.readyState < 2 || capturing || faceInFlight >= FACE_QUEUE) return;
+    faceInFlight++;
+    const fts = performance.now(), w = FACE_INPUT_W, h = Math.round((FACE_INPUT_W * video.videoHeight) / video.videoWidth);
+    createImageBitmap(video, { resizeWidth: w, resizeHeight: h, resizeQuality: "low" })
+      .then((bmp) => faceLm.worker.postMessage({ frame: bmp, ts: fts }, [bmp]))
+      .catch(() => { faceInFlight = Math.max(0, faceInFlight - 1); });
+  }
+
+  // One face reading (from the worker, or inline): challenge, stillness, loss.
+  function onFace(f, ts) {
+    face = f;
+    camStats.face++;
+    const pending = !challenge.done;
+    if (face) {
+      faceSeenTs = ts;
+      noseTrail.push({ t: ts, ...face.nose });
+      while (noseTrail.length && ts - noseTrail[0].t > STILL_MS) noseTrail.shift();
+      // Count the challenge on every good face frame, not only when the body
+      // framing is also perfect: a blink during a framing flicker still counts.
+      // A blink needs no particular head angle (riders look down at the phone);
+      // one face in view is enough.
+      if (pending && face.count === 1) {
+        stepChallenge();
+      }
+    } else if (ts - faceSeenTs > FACE_LOST_RESET_MS && challenge.type !== "none" && (challenge.done || challenge.phase)) {
+      resetChallenge(); // a different person could step in after the challenge
+    }
+  }
+
   function loop() {
     if (!stream || !video) return;
     rafId = requestAnimationFrame(loop);
@@ -579,23 +711,16 @@ export function createCapture(stage, options = {}) {
     lastTs = ts;
     tick++;
 
-    if (faceLm) {
-      face = faceMetrics(faceLm.detectForVideo(video, ts));
-      if (face) {
-        faceSeenTs = ts;
-        noseTrail.push({ t: ts, ...face.nose });
-        while (noseTrail.length && ts - noseTrail[0].t > STILL_MS) noseTrail.shift();
-        // Count the challenge on every good face frame, not only when the body
-        // framing is also perfect: a blink during a framing flicker still counts.
-        if (pending && face.count === 1 && (challenge.type === "turn"
-            || (Math.abs(face.yaw) <= YAW_FRONTAL * 1.5 && Math.abs(face.pitch) <= PITCH_FRONTAL * 1.5))) {
-          stepChallenge();
-        }
-      } else if (ts - faceSeenTs > FACE_LOST_RESET_MS && challenge.type !== "none" && (challenge.done || challenge.phase)) {
-        resetChallenge(); // a different person could step in after the challenge
-      }
+    if (faceLm?.worker) {
+      if (faceInFlight && ts - faceReplyTs > 1000) faceInFlight = 0; // lost replies
+      sendFaceFrame();
+    } else if (faceLm?.lm) {
+      onFace(faceMetrics(faceLm.lm.detectForVideo(video, ts)), ts);
     }
-    if (tick % (pending ? 3 : 2) === 1 || !poseLm) poseLm = landmarker.detectForVideo(video, ts).landmarks?.[0] || null;
+    if (faceLm?.worker || tick % (pending ? 3 : 2) === 1 || !poseLm) {
+      poseLm = landmarker.detectForVideo(video, ts).landmarks?.[0] || null;
+      camStats.pose++;
+    }
 
     if (!poseLm) {
       skeleton.innerHTML = "";
@@ -717,13 +842,26 @@ export function createCapture(stage, options = {}) {
       onPoseStatus("Loading the camera guide…");
       const [pose, fl] = await Promise.allSettled([
         landmarker || poseFailed ? Promise.resolve(landmarker) : loadLandmarker(),
-        faceLm || faceFailed ? Promise.resolve(faceLm) : loadFaceLandmarker(),
+        faceLm || faceFailed ? Promise.resolve(faceLm) : loadFace(),
       ]);
       if (stale()) return false;
       if (pose.status === "fulfilled") landmarker = pose.value; else poseFailed = true;
       if (fl.status === "fulfilled") faceLm = fl.value; else faceFailed = true;
       onPoseStatus(poseFailed ? "Pose guide unavailable — frame yourself in the outline and tap Capture"
         : faceFailed ? "Face checks unavailable — framing guide only" : "");
+    }
+    camStats.worker = !!faceLm?.worker;
+    if (faceLm?.worker) {
+      // replies from the face thread (this capture owns it while live)
+      faceInFlight = 0;
+      faceLm.worker.onmessage = (e) => {
+        if (!e.data || !("face" in e.data)) return;
+        faceInFlight = Math.max(0, faceInFlight - 1);
+        faceReplyTs = performance.now();
+        if (!stream || capturing) return;
+        onFace(e.data.face, e.data.ts);
+        sendFaceFrame(); // straight away, not on the next loop tick
+      };
     }
     if (challenge.type !== "none" && (poseFailed || faceFailed)) {
       // Fail closed: the liveness challenge can't run without the models, and
@@ -774,7 +912,8 @@ export function createCapture(stage, options = {}) {
     // Low light: light the face with the screen, give auto-exposure a moment, and
     // take the frame while the screen is still white.
     const useFlash = flashMode === "on" || (flashMode === "auto" && lowLight);
-    // Exactly the visible part of the picture, in camera pixels, unmirrored.
+    // Exactly the visible part of the picture, in camera pixels (mirrored at the
+    // end, to match the preview; the visible area is centred, so it lines up).
     const { sx, sy, sw, sh } = visibleSrc();
     const out = Math.min(1, maxSide / Math.max(sw, sh));
     const grab = () => {
@@ -839,11 +978,16 @@ export function createCapture(stage, options = {}) {
       if (mean < BRIGHTEN_BELOW) {
         // The server light check must see the photo as the camera took it: after
         // brightening every dark photo would look fine to it.
-        quality.raw = c.toDataURL("image/jpeg", 0.9);
+        quality.raw = asSeen(c).toDataURL("image/jpeg", 0.9);
         brighten(c, mean); quality.brightened = true;
       }
     } catch (_) { /* never block a capture on the checks themselves */ }
-    const dataUrl = c.toDataURL("image/jpeg", 0.92);
+    // The photo is what the rider saw: the preview is mirrored like a mirror,
+    // so the saved photo is too (it no longer flips the moment it is taken).
+    // The checks are unaffected: face match is mirror-tolerant and the logo
+    // reader re-reads mirrored text. Quality was measured above, unmirrored.
+    const dataUrl = asSeen(c).toDataURL("image/jpeg", 0.92);
+    quality.mirrored = true;
 
     flash.classList.remove("go"); void flash.offsetWidth; flash.classList.add("go");
     stop();

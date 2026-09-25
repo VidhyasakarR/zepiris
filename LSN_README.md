@@ -141,6 +141,40 @@ This writes `models/siglip2_base_vision.onnx`, which is gitignored. Bake it into
 
 ---
 
+## Scores only: `POST /v1/checkpoint/score`
+
+The rider UI (web page and native SDK) never shows or decides pass / fail. It returns **scores**, and the rider app sends them, with the selfie, to the go-online API, which decides and stores them.
+
+It takes the same body as `/v1/checkpoint/verify` (`face_check_b64` or `face_check_s3`, `source_selfie_*`, `checks`) and runs the same checks. Threshold fields are ignored. Response:
+
+```json
+{
+  "requestId": "de243fb3-2ee7-435d-bb83-c155715c70bb",
+  "scoredAt": "2026-09-25T11:30:02Z",
+  "checksRequested": ["face_match", "dress_color", "logo"],
+  "scores": {
+    "face_match":  {"similarity": 0.8214, "liveness": 0.8866, "faceDetected": true},
+    "dress_color": {"score": 0.9583},
+    "logo":        {"score": 1.0, "read": {"text": "LOADSHARE", "matched": "LOADSHARE", "onBlue": 0.96, "reason": null}}
+  },
+  "image": {"sha256": "50f392d5…7b943f", "bytes": 262029}
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `face_match.similarity` | Cosine similarity to the enrolled selfie, `null` if no face was found. The server's pass mark is 0.5. |
+| `face_match.liveness` | Probability the selfie is a live person (MiniFASNet), `null` when liveness is off. The server's pass mark is 0.4. |
+| `dress_color.score` | Loadshare-blue shirt probability. The server's pass mark is 0.38. |
+| `logo.score` | 1.0 for an exact LOADSHARE run, 0.8 for a one-letter-off read, 0 for none. The pass mark is 0.8. `read` says what was read and why it failed (`no_loadshare_text`, `not_on_blue`). |
+| `image.sha256` | SHA-256 of the exact photo that was scored. The go-online API can compare it with the selfie stored in S3. |
+
+A check that was not requested is absent from `scores`.
+
+The scores travel through the rider's phone and are not signed, so a modified app could change them. Before relying on them for a real decision, have the go-online API re-score the S3 selfie server-to-server, or add signing back.
+
+`/v1/checkpoint/verify` still exists and still returns pass / fail, for the operator page and server-to-server callers.
+
 ## Logo check: reading LOADSHARE on the shirt
 
 The `logo` check is decided by OCR (PP-OCR through RapidOCR, ONNX on CPU, Apache-2.0, 15 MB of models inside the wheel), not by the learned logo head. That head had only ever seen "Loadshare print" against "no print", so it learned "white print on the chest", and a marathon tee passed.
@@ -184,7 +218,10 @@ How the page behaves:
   | Moving | "Hold still" |
 
   Calibration: on 18 real rider selfies, yaw stayed within ±0.08 (limit 0.11), pitch within ±0.09 (limit 0.12), and eye-closed peaked at 0.25 (limit 0.5).
-- **Liveness challenge.** Once the rider is framed, the page asks for a blink, or a head turn and back. Capture stays locked until it is done, and it resets if the face leaves the frame. A printed photo or a still picture can't pass it.
+- **Liveness challenge.** Once the rider is framed, the page asks for a blink ("Blink 3 times, quickly") or a head turn and back. The prompt asks for three blinks so the camera gets several chances; one detected blink passes.
+  - **Two blink signals.** A blink is detected if either the face model's blink score for both eyes rises, or the eyelid outline (eye height divided by width) of both eyes drops under 60% of the rider's own open level. Both signals must show the eyes open again for it to count. The eyelid signal still works behind glasses, where the blink score can stay flat.
+  - **No head angle required.** One face in view is enough, since riders often look down at the phone. A still photo, a wink, jitter, and eyes that stay shut do not pass (JS unit tests).
+  - Capture stays locked until it is done, and it resets if the face leaves the frame. A printed photo or a still picture can't pass it.
   - It is a barrier on the phone, not proof. Server-side passive liveness (MiniFASNet, `ZEPIRIS_LIVENESS_ENABLED`) still decides.
   - **If the face models can't load (CDN blocked, bad network), the page fails closed.** It shows "Couldn't load the face check" with a retry, instead of skipping the challenge.
   - Two faces in the frame reset the challenge, so it can't be handed from one person to another.
@@ -230,6 +267,8 @@ The flow is **Config → selfie page → result**.
 - **Open:** Open selfie hands the page the rider's config with `window.zepirisConfigure()`. The page validates it through `POST /ui/selfie/config` (the same rules as `POST /ui/selfie`) while the camera is already opening.
 - **Back:** going back calls `window.zepirisReset()`, which stops the camera and clears the rider's data but keeps the models in memory.
 - **Measured on a Redmi (2312FRAFDI):** models ready about 4.5 s after the app opens, and the camera live about 1.5 s after tapping Open selfie. Before, the model load came after the tap.
+- **Face model on its own thread.** Measured on the Redmi, face takes about 70 ms and pose about 45 ms a frame. Run one after the other on the page's thread, that gave only 6 face and 4 pose readings a second: blinks were missed and the outline lagged. The face model now runs in a Web Worker. It has to be a classic worker, because MediaPipe uses `importScripts`. The page sends it 480-px frames as ImageBitmaps, keeping two queued so it never waits, and gets back only the `faceMetrics()` numbers. Result: about 13 face readings and 12–13 pose readings a second. If workers are unavailable, it falls back to the page thread. `window.__zepirisCamStats` counts readings, for tuning on a device.
+- **The photo is saved as seen.** The preview is mirrored like a mirror, and the saved photo is now mirrored too, so it no longer flips the moment it's taken. Face match against an un-mirrored enrolled selfie scored 0.95–0.98 (pass mark 0.5). The logo reader reads mirrored text on its second pass, about 0.4 s more per check.
 - **Deadlines:** model setup gets 10 s on GPU and 20 s on CPU, so a WebView that is backgrounded mid-load cannot hang the camera screen.
 - **Older servers:** if the server's page has no standby mode, the app falls back to POSTing the config.
 - **Test builds:** `--dart-define=API_BASE=http://localhost:8000` (with `adb reverse tcp:8000 tcp:8000`) points the app at a laptop over USB, and `--dart-define=WEBVIEW_DEBUG=true` allows `chrome://inspect`.

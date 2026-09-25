@@ -1,0 +1,8 @@
+Copyright (c) Loadshare Networks. Internal SDK; terms of use to be set by Loadshare.
+
+Third-party components used at runtime (their own terms apply):
+- AndroidX CameraX 1.4.2 (camera-core, camera-camera2, camera-lifecycle, camera-view): Apache License 2.0
+- AndroidX Activity 1.9.3: Apache License 2.0
+- Google ML Kit face detection via Google Play Services (play-services-mlkit-face-detection 17.1.0):
+  ML Kit Terms of Service, https://developers.google.com/ml-kit/terms
+- Dart package http: BSD 3-Clause

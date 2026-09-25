@@ -1,0 +1,29 @@
+name: lsn_capture_sdk
+description: "Loadshare checkpoint selfie capture: native Android camera, on-device face checks and blink/head-turn liveness, then photo quality check and scores (no pass/fail)."
+version: 1.1.0
+publish_to: none # internal: add it by path or git, see README
+
+environment:
+  sdk: ">=3.5.0 <4.0.0"
+  flutter: ">=3.24.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.6.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+# For information on the generic Dart part of this file, see the
+# following page: https://dart.dev/tools/pub/pubspec
+
+# The following section is specific to Flutter packages.
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.loadshare.lsn_capture_sdk
+        pluginClass: LsnCaptureSdkPlugin

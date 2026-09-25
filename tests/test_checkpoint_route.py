@@ -163,3 +163,52 @@ def test_unknown_or_empty_checks_rejected() -> None:
 
 def test_both_inputs_for_one_side_rejected() -> None:
     assert _post(_client(_ML()), face_check_s3="https://s3/probe.jpg").status_code == 400
+
+
+# ---- /score: scores only, no decision ---------------------------------------------
+import base64 as _b64  # noqa: E402
+import hashlib as _hashlib  # noqa: E402
+
+
+def _score(client, **body):
+    base = {"face_check_b64": _jpeg_b64(), "source_selfie_b64": _jpeg_b64()}
+    return client.post("/v1/checkpoint/score", json={**base, **body})
+
+
+def _walk_keys(obj):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            yield k
+            yield from _walk_keys(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _walk_keys(v)
+
+
+def test_score_has_no_decision_anywhere() -> None:
+    body = _score(_client(_ML(color=0.6, logo=0.2))).json()
+    keys = set(_walk_keys(body))
+    assert not keys & {"passed", "isCleared", "threshold", "isMatch", "livenessFailed", "signature"}
+    assert set(body) == {"requestId", "scoredAt", "checksRequested", "scores", "image"}
+    assert body["checksRequested"] == ["face_match", "dress_color", "logo"]
+    assert body["scores"]["dress_color"] == {"score": 0.6}
+    assert body["scores"]["logo"] == {"score": 0.2}
+    fm = body["scores"]["face_match"]
+    assert set(fm) == {"similarity", "liveness", "faceDetected"} and fm["faceDetected"] is True
+
+
+def test_score_reports_liveness_even_when_not_live() -> None:
+    fm = _score(_client(_ML(live=False), liveness=True), checks=["face_match"]).json()["scores"]["face_match"]
+    assert fm["liveness"] == 0.1 and fm["similarity"] is not None
+
+
+def test_score_only_runs_requested_checks() -> None:
+    body = _client(_ML()).post("/v1/checkpoint/score", json={"face_check_b64": _jpeg_b64(), "checks": ["logo"]}).json()
+    assert set(body["scores"]) == {"logo"}
+
+
+def test_score_image_hash_is_of_the_exact_photo() -> None:
+    photo = _jpeg_b64()
+    body = _client(_ML()).post("/v1/checkpoint/score", json={"face_check_b64": photo, "checks": ["logo"]}).json()
+    raw = _b64.b64decode(photo)
+    assert body["image"] == {"sha256": _hashlib.sha256(raw).hexdigest(), "bytes": len(raw)}
