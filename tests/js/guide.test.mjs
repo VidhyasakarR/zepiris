@@ -75,6 +75,21 @@ test("reset makes it start over", () => {
   assert.equal(c.done, true); c.reset(); assert.equal(c.done, false);
 });
 
+// ---- blink measured against the rider's own open-eye level ------------------
+const eyes = (l, r = l) => ({ blinkL: l, blinkR: r });
+test("blink: a soft blink behind glasses (peak 0.4) passes", () =>
+  assert.equal(run("blink", [eyes(0.08), eyes(0.1), eyes(0.09), eyes(0.4), eyes(0.12)]), true));
+test("blink: squinting rider (open level 0.3) blinks to 0.55", () =>
+  assert.equal(run("blink", [eyes(0.3), eyes(0.28), eyes(0.31), eyes(0.55), eyes(0.33)]), true));
+test("blink: jittery open eyes (0.05-0.25) never pass", () => {
+  const f = []; for (let i = 0; i < 200; i++) f.push(eyes(0.05 + 0.2 * ((i * 37) % 11) / 10));
+  assert.equal(run("blink", f), false);
+});
+test("blink: one frame of it is enough (fast blink)", () =>
+  assert.equal(run("blink", [eyes(0.1), eyes(0.6), eyes(0.1)]), true));
+test("blink: a wink still does not count", () =>
+  assert.equal(run("blink", [eyes(0.1), eyes(0.9, 0.12), eyes(0.1), eyes(0.1, 0.85), eyes(0.1)]), false));
+
 // ---- the capture loop's gate: the challenge only steps when there is no problem
 const loop = (type, frames) => {
   const c = G.createChallenge(type);

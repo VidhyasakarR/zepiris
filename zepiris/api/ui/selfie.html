@@ -102,12 +102,15 @@
 
 <script id="config" type="application/json">null</script>
 <script type="module">
-import { createCapture, serverQuality } from "/ui/static/guide.js";
+import { createCapture, serverQuality, preload } from "/ui/static/guide.js";
 const $ = (id) => document.getElementById(id);
 const LABEL = { face_match: "Face match", dress_color: "Dress colour", logo: "Logo" };
 
 // Parameters POSTed to this page (validated by the server); never from the URL.
-const cfg = JSON.parse($("config").textContent);
+// An app can instead keep this page open in the background (standby) and hand
+// it a config later with window.zepirisConfigure(): the camera models are then
+// already loaded when the rider taps Open selfie.
+let cfg = JSON.parse($("config").textContent);
 let selfie = null;
 let attempt = 0; // bumps on every capture / retake: late replies for an old photo are dropped
 const esc = (v) => String(v).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
@@ -159,12 +162,15 @@ const cam = createCapture($("stage"), {
 });
 $("startBtn").addEventListener("click", () => cam.start());
 $("snapBtn").addEventListener("click", () => cam.capture());
-$("retakeBtn").addEventListener("click", () => {
-  if (submitting) return; // the result for this photo is on its way
+function resetUi() {
   attempt++;
   selfie = null; $("result").hidden = true; $("dock").hidden = false; showError(""); $("blurWarn").hidden = true;
   $("note").textContent = ""; $("stage").classList.remove("blurry");
   $("shotBar").hidden = true; $("liveBar").hidden = false; $("submitBtn").disabled = false;
+}
+$("retakeBtn").addEventListener("click", () => {
+  if (submitting) return; // the result for this photo is on its way
+  resetUi();
   cam.start();
 });
 
@@ -223,10 +229,47 @@ function render(d) {
   $("note").textContent = "";
 }
 
+// ---- standby: an app keeps this page warm and configures it on demand -------
+// Returns true once the camera is live, false on a bad config or no camera.
+window.zepirisConfigure = async (raw) => {
+  // The camera opens while the server checks the config (they don't depend on
+  // each other): ~0.4 s sooner. Zoom and challenge are applied once it answers.
+  resetUi();
+  const camera = cam.start();
+  const fail = async (msg, extra = {}) => {
+    await camera; cam.stop();
+    showError(msg); bridge({ type: "config_error", message: msg, ...extra }); return false;
+  };
+  let r, d = null;
+  try {
+    r = await fetch("/ui/selfie/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(raw || {}) });
+    try { d = await r.json(); } catch (_) {}
+  } catch (e) {
+    return fail(`Could not reach the server (${e.message})`);
+  }
+  if (!r.ok) {
+    const det = d?.detail;
+    return fail(typeof det === "string" ? det : det ? JSON.stringify(det) : `Server error ${r.status}`, { status: r.status });
+  }
+  cfg = d;
+  cam.setZoom(cfg.zoom ?? 0.5);
+  cam.setChallenge(cfg.challenge ?? "blink");
+  const ok = await camera;
+  if (!ok) $("note").textContent = "Tap Start camera to try again";
+  return ok;
+};
+// Back to standby: release the camera and forget this rider.
+window.zepirisReset = () => { resetUi(); cam.stop(); cfg = null; };
+
 // ---- go --------------------------------------------------------------------
 if (!cfg) {
-  showError("Open this page from the app: it must be POSTed the rider's checkpoint details.");
   $("snapBtn").disabled = true;
+  if (window.ZepirisBridge) {
+    // standby inside the app: load the models now, the camera opens on configure
+    preload().then((ok) => bridge({ type: "standby_ready", models: ok }));
+  } else {
+    showError("Open this page from the app: it must be POSTed the rider's checkpoint details.");
+  }
 } else {
   cam.start().then((ok) => { if (!ok) $("note").textContent = "Tap Start camera to try again"; });
 }

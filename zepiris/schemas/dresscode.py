@@ -57,6 +57,8 @@ class DresscodeMatchResponse(BaseModel):
     #: calibrated thresholds; empty when the learned model is not loaded.
     check_scores: dict[str, float] = Field(default_factory=dict, alias="checkScores")
     check_thresholds: dict[str, float] = Field(default_factory=dict, alias="checkThresholds")
+    #: What the logo check read on the shirt: {"text", "matched", "onBlue", "reason"}.
+    logo_text: dict | None = Field(None, alias="logoText")
     scores: DresscodeScores
     face_detected: bool = Field(..., alias="faceDetected")
     #: "torso" (face-anchored) or "fallback_full_image" (no face found).

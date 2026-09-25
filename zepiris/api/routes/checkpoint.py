@@ -124,6 +124,8 @@ async def checkpoint_verify(
                 continue
             threshold = overrides[c] if overrides[c] is not None else dress.check_thresholds[c]
             checks[c] = {"passed": per[c] >= threshold, "score": per[c], "threshold": threshold}
+            if c == "logo" and dress.logo_text is not None:
+                checks[c]["read"] = dress.logo_text  # what OCR read on the shirt, and why
         dress_body = dress.model_dump(by_alias=True)
         dress_body.pop("requestId", None)
         body["dresscode"] = dress_body

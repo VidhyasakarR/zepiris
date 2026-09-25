@@ -141,6 +141,19 @@ This writes `models/siglip2_base_vision.onnx`, which is gitignored. Bake it into
 
 ---
 
+## Logo check: reading LOADSHARE on the shirt
+
+The `logo` check is decided by OCR (PP-OCR through RapidOCR, ONNX on CPU, Apache-2.0, 15 MB of models inside the wheel), not by the learned logo head. That head had only ever seen "Loadshare print" against "no print", so it learned "white print on the chest", and a marathon tee passed.
+
+- **Letters:** a line read on the T-shirt counts if its letters are a run of LOADSHARE of 4 or more letters, forwards or backwards: `LOADSHARE`, `SHARE`, `LOAD`, `ADSHARE`, `ERAHS`. Shorter reads must be exact, so a partly read `ROADSTAR` ("ROADS") fails. Reads of 7 or more letters may have one wrong or extra letter at the very start or end (`LOADSHARC`), which is where OCR misreads land. A wrong letter mid-word is another word (`LOADSTAR`, `OADSTAR`). Doubled letters are collapsed first (`LLOAD`), since LOADSHARE has none. An F counts as an E (`HARF`), since LOADSHARE has no F.
+- **Photos cut at the chest:** vertical text that runs into the photo's top or bottom edge is a sliced wordmark. It needs only 3 letters (`ARE`, `LOA`), and 4+ letters may have one wrong letter at an end, the sliced one (`IARE`). On the 17 uniform photos cropped at chest height: 17/17 pass when the photo ends at the stomach (3 face heights below the top of the head), 15/17 mid-chest (2.5), and 8/17 just below the collar (2.0), where often only 2 letters show. Other words cut the same way still fail. The exception is a word one end letter away from a run, such as "CARE" for HARE.
+- **On blue:** at least 45% of the fabric around the letters must be Loadshare blue. A shirt region with almost no blue is rejected without running OCR at all.
+- **On the shirt:** only the area from the chin down is read (in face-box units: ±2.6 face widths, 0.9 to 7 face heights), so background signs don't count. If nothing matches, the region is read again mirrored (selfies saved mirrored by a camera app) and upside down.
+- **Result:** `checks.logo.read` in the checkpoint response (`logoText` on `/v1/dresscode/match`) shows what was read, the run it matched, how much blue surrounds it, and the reason for a failure (`no_loadshare_text`, `not_on_blue`, `ocr_error`). An OCR error fails closed.
+- **Measured:** 152 of 153 test images were decided correctly. The set was the 17 uniform photos plus 3 references, and copies with the print replaced by other brands (Swiggy, Zomato, Zepto, Blinkit, Amazon, Rapido…), other prints and icons, or re-coloured red, black or grey. The one miss is a 170×296 reference photo whose only mark is the small chest logo.
+- **Cost:** about 0.4 to 0.7 s per image on a Mac CPU, more when the retries run.
+- **Install:** `pip install --no-deps rapidocr_onnxruntime==1.4.4 pyclipper shapely`. Use `--no-deps` because it asks for the GUI `opencv-python`, which clashes with `opencv-python-headless`. The Dockerfile does this. Set `ML_SERVICE_DRESSCODE_LOGO_OCR_ENABLED=false` to go back to the learned head.
+
 ## Rider selfie page (`POST /ui/selfie`)
 
 A full-screen camera page for riders. It is opened with a **POST**, as a form or JSON, whose body carries the checkpoint config. Nothing goes in the URL and nothing is configurable on screen.
@@ -212,9 +225,18 @@ The flow is **Config → selfie page → result**.
 2. **Open selfie:** loads the server's `/ui/selfie` in a full-screen WebView, POSTing that config. It's the same page as on the web, so the guide, zoom, green-to-capture and Submit behave identically.
 3. **Result:** the page shows it, and the app shows a Cleared / Not cleared chip.
 
+**Fast open (standby page).** The camera guide needs about 12 MB of models (MediaPipe pose, face and WebAssembly) that take seconds to download and compile.
+- **Preload:** as soon as the Config screen shows, the app loads `GET /ui/selfie` in a background WebView. The WebView sits in a 1×1 box on screen, because a WebView must be attached to render and use the GPU. The page calls `preload()` in `guide.js`, which downloads, compiles and warms up both models.
+- **Open:** Open selfie hands the page the rider's config with `window.zepirisConfigure()`. The page validates it through `POST /ui/selfie/config` (the same rules as `POST /ui/selfie`) while the camera is already opening.
+- **Back:** going back calls `window.zepirisReset()`, which stops the camera and clears the rider's data but keeps the models in memory.
+- **Measured on a Redmi (2312FRAFDI):** models ready about 4.5 s after the app opens, and the camera live about 1.5 s after tapping Open selfie. Before, the model load came after the tap.
+- **Deadlines:** model setup gets 10 s on GPU and 20 s on CPU, so a WebView that is backgrounded mid-load cannot hang the camera screen.
+- **Older servers:** if the server's page has no standby mode, the app falls back to POSTing the config.
+- **Test builds:** `--dart-define=API_BASE=http://localhost:8000` (with `adb reverse tcp:8000 tcp:8000`) points the app at a laptop over USB, and `--dart-define=WEBVIEW_DEBUG=true` allows `chrome://inspect`.
+
 Build:
 ```bash
-cd mobile/lsn_checkpoint && flutter build apk --release
+cd mobile/lsn_checkpoint && flutter build apk --release --split-per-abi
 ```
 
 This writes `build/app/outputs/flutter-apk/app-release.apk`. Install it:
@@ -243,6 +265,7 @@ Notes:
 | `ZEPIRIS_LIVENESS_ENABLED` | API | `false` | Gate `/facematch/verify` and `/checkpoint/verify` on liveness. Fails closed (503) if the model is missing |
 | `ML_SERVICE_DRESSCODE_CLASSIFIER_ENABLED` | ML | `true` | Use the SigLIP2 uniform classifier when the encoder exists |
 | `ML_SERVICE_DRESSCODE_ENCODER_PATH` | ML | `/app/models/siglip2_base_vision.onnx` | Falls back to `./models/<name>` on native runs |
+| `ML_SERVICE_DRESSCODE_LOGO_OCR_ENABLED` | ML | `true` | Decide the logo check by reading LOADSHARE on blue fabric (see above) |
 | `ML_SERVICE_DRESSCODE_HEAD_PATH` | ML | *(bundled asset)* | Override the trained head JSON |
 | `ML_SERVICE_QUALITY_CHECK_ENABLED` | ML | `true` | Load the blur model (`models/blur_model.pth`) for `/v1/quality/check`, even in face-match-only mode |
 | `ZEPIRIS_ALLOW_THRESHOLD_OVERRIDE` | API | `false` | Accept per-request pass marks on `/v1/checkpoint/verify` and `/ui/selfie`. Keep it off in production: a device could otherwise clear itself |

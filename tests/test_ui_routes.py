@@ -127,3 +127,12 @@ def test_selfie_accepts_large_multipart_source() -> None:
     big = "A" * 2_000_000  # > Starlette's 1 MB default part size
     r = _client().post("/ui/selfie", files={"checks": (None, "face_match"), "source_selfie_b64": (None, big)})
     assert r.status_code == 200, r.text[:200]
+
+
+def test_selfie_config_endpoint_validates_like_the_page() -> None:
+    c = _client()
+    r = c.post("/ui/selfie/config", json={"checks": ["logo"], "zoom": 0.5, "challenge": "blink"})
+    assert r.status_code == 200 and r.json() == {"checks": ["logo"], "zoom": 0.5, "challenge": "blink"}
+    assert r.headers["cache-control"] == "no-store"
+    assert c.post("/ui/selfie/config", json={"checks": ["face_match"]}).status_code == 422   # no source
+    assert c.post("/ui/selfie/config", json={"checks": ["logo"], "logo_threshold": 0.5}).status_code == 403

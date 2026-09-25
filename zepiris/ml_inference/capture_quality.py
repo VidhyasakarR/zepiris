@@ -31,10 +31,14 @@ MIN_FACE_WIDTH_FRAC = 0.12
 TOO_DARK_LUMA = 45
 TOO_BRIGHT_LUMA = 230
 #: The expected T-shirt region (chin → stomach) must be at least this much in frame.
-MIN_SHIRT_VISIBLE = 0.5
+#: 0.35: a close selfie that shows the chest and upper stomach is enough for the
+#: colour and logo checks; 0.5 of a region reaching 4 face-heights down flagged
+#: exactly such a photo ("T-shirt not visible" with the whole chest in view).
+MIN_SHIRT_VISIBLE = 0.35
 
-# T-shirt region, in face-box units: from just under the chin to the stomach.
-_SHIRT_HALF_W, _SHIRT_TOP, _SHIRT_BOTTOM = 2.0, 0.3, 4.0
+# T-shirt region, in face-box units: from just under the chin to the stomach
+# (about three face-heights below the top of the head).
+_SHIRT_HALF_W, _SHIRT_TOP, _SHIRT_BOTTOM = 2.0, 0.3, 3.0
 
 
 def _crop(img: np.ndarray, x1: float, y1: float, x2: float, y2: float) -> np.ndarray:

@@ -74,6 +74,7 @@ class DresscodeDetectionService:
         min_roi_pixels: int = 2000,
         logo_template_path: str | Path | None = None,
         classifier=None,
+        logo_reader=None,
     ) -> None:
         """
         Args:
@@ -94,6 +95,9 @@ class DresscodeDetectionService:
                 When set, its probability is the decision score (``engine="siglip2"``)
                 and blue coverage / logo match are reported as supporting signals
                 only. Without it the fused colour/logo score decides (``engine="hsv"``).
+            logo_reader: Optional :class:`~zepiris.ml_inference.logo_text.LoadshareTextDetector`.
+                When set, it decides the ``logo`` check (LOADSHARE letters read on
+                blue fabric) in place of the learned logo head.
         """
         self._face_service = face_service
         self._hue_min = int(hue_min)
@@ -108,6 +112,7 @@ class DresscodeDetectionService:
         self._min_roi_pixels = int(min_roi_pixels)
         self._templates = self._load_templates(logo_template_path or DEFAULT_LOGO_PATH)
         self._classifier = classifier
+        self._logo_reader = logo_reader
 
     # -- setup ---------------------------------------------------------------
 
@@ -236,6 +241,23 @@ class DresscodeDetectionService:
             return 0.0
         return max(0.0, min(1.0, (self._blue_weight * blue + self._logo_weight * logo) / total))
 
+    def _read_logo(self, image_rgb, detection, check_scores: dict, check_thresholds: dict) -> dict | None:
+        """Decide ``logo`` by reading LOADSHARE on blue fabric (overrides the learned head)."""
+        if self._logo_reader is None:
+            return None
+        from zepiris.ml_inference.logo_text import MIN_SIMILARITY
+
+        try:
+            r = self._logo_reader.detect(image_rgb, detection.bbox if detection.face_detected else None)
+        except Exception:
+            # Fail closed: an OCR error must not fall back to the head that
+            # passes any chest print.
+            logger.exception("Logo OCR failed")
+            check_scores["logo"], check_thresholds["logo"] = 0.0, MIN_SIMILARITY
+            return {"text": None, "matched": None, "onBlue": None, "reason": "ocr_error"}
+        check_scores["logo"], check_thresholds["logo"] = float(r.score), MIN_SIMILARITY
+        return {"text": r.text, "matched": r.matched, "onBlue": r.on_blue, "reason": r.reason}
+
     # -- entry point ---------------------------------------------------------
 
     def check(self, image_rgb: np.ndarray) -> DresscodeCheckResult:
@@ -270,6 +292,9 @@ class DresscodeDetectionService:
                 image_rgb, detection.bbox if detection.face_detected else None
             )
             uniform = probs["uniform"]
+            check_scores = {k: v for k, v in probs.items() if k != "uniform"}
+            check_thresholds = {k: v for k, v in self._classifier.thresholds().items() if k != "uniform"}
+            logo_text = self._read_logo(image_rgb, detection, check_scores, check_thresholds)
             return DresscodeCheckResult(
                 face_detected=detection.face_detected,
                 region=region,
@@ -279,10 +304,9 @@ class DresscodeDetectionService:
                 uniform_score=uniform,
                 engine="siglip2",
                 recommended_threshold=self._classifier.threshold,
-                check_scores={k: v for k, v in probs.items() if k != "uniform"},
-                check_thresholds={
-                    k: v for k, v in self._classifier.thresholds().items() if k != "uniform"
-                },
+                check_scores=check_scores,
+                check_thresholds=check_thresholds,
+                logo_text=logo_text,
                 reason=None,
             )
 

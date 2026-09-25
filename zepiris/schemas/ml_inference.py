@@ -153,6 +153,7 @@ class DresscodeCheckResult(BaseModel):
         check_scores: Per-check model probabilities ("dress_color", "logo") from
             the heads sharing the classifier's embedding; empty without it.
         check_thresholds: The calibrated threshold for each entry of check_scores.
+        logo_text: OCR evidence behind ``check_scores["logo"]`` (see logo_text.py).
         reason: None on a normal scored result, else "roi_too_small" or
             "no_blue_region" (colour/logo rule only).
     """
@@ -167,6 +168,9 @@ class DresscodeCheckResult(BaseModel):
     recommended_threshold: float | None = None
     check_scores: dict[str, float] = Field(default_factory=dict)
     check_thresholds: dict[str, float] = Field(default_factory=dict)
+    #: The logo check's reading when it is decided by OCR: {"text", "matched",
+    #: "onBlue", "reason"} — what was read on the shirt and why it passed/failed.
+    logo_text: dict | None = None
     reason: str | None = None
 
 

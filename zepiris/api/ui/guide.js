@@ -299,18 +299,49 @@ export function faceMetrics(res) {
   };
 }
 
+// The WebAssembly runtime, fetched and compiled once for both models.
+let filesPromise = null;
+function visionFiles() {
+  filesPromise = filesPromise || (async () => {
+    const { FilesetResolver } = await import(MP_BUNDLE);
+    return FilesetResolver.forVisionTasks(MP_WASM);
+  })();
+  filesPromise.catch(() => { filesPromise = null; });
+  return filesPromise;
+}
+
+// A model setup that never settles (a WebView put in the background mid-load
+// can stall GPU setup indefinitely) must not hang the camera screen: give each
+// attempt a deadline, then fall back / let the next start() retry.
+const GPU_SETUP_MS = 10000, CPU_SETUP_MS = 20000;
+function withDeadline(p, ms, what) {
+  let t;
+  return Promise.race([p, new Promise((_, rej) => { t = setTimeout(() => rej(new Error(`${what} timed out`)), ms); })])
+    .finally(() => clearTimeout(t));
+}
+
+// Run one frame through a fresh model: the first inference compiles the GPU
+// shaders (up to a second on a phone), better paid before the camera opens.
+function warmUp(model) {
+  try {
+    const c = document.createElement("canvas"); c.width = c.height = 128;
+    const g = c.getContext("2d"); g.fillStyle = "#888"; g.fillRect(0, 0, 128, 128);
+    model.detectForVideo(c, performance.now());
+  } catch (_) { /* warm-up is best effort */ }
+  return model;
+}
+
 let faceLmPromise = null;
 function loadFaceLandmarker() {
   // A failed load is forgotten, so a retake / Retry tries the network again.
   faceLmPromise = faceLmPromise || (async () => {
-    const { FilesetResolver, FaceLandmarker } = await import(MP_BUNDLE);
-    const files = await FilesetResolver.forVisionTasks(MP_WASM);
+    const [{ FaceLandmarker }, files] = await Promise.all([import(MP_BUNDLE), visionFiles()]);
     const opts = (delegate) => ({
       baseOptions: { modelAssetPath: MP_FACE_MODEL, delegate }, runningMode: "VIDEO",
       numFaces: 2, outputFaceBlendshapes: true,
     });
-    try { return await FaceLandmarker.createFromOptions(files, opts("GPU")); }
-    catch (_) { return await FaceLandmarker.createFromOptions(files, opts("CPU")); }
+    try { return warmUp(await withDeadline(FaceLandmarker.createFromOptions(files, opts("GPU")), GPU_SETUP_MS, "face GPU")); }
+    catch (_) { return warmUp(await withDeadline(FaceLandmarker.createFromOptions(files, opts("CPU")), CPU_SETUP_MS, "face CPU")); }
   })();
   faceLmPromise.catch(() => { faceLmPromise = null; });
   return faceLmPromise;
@@ -345,14 +376,29 @@ const CHALLENGE_TEXT = { blink: "Blink your eyes", turn: "Turn your head to one 
  *   blink: both eyes seen closed (> EYES_CLOSED), then open again (< EYES_OPEN)
  *   turn : head turned past YAW_TURNED either way, then back to frontal
  */
+// Blink, measured against this rider's own open-eye level: a blink behind
+// glasses or in dim light often peaks at 0.35-0.45 on the blendshape, which a
+// fixed 0.5 missed ("blink again, and again"). Closed = both eyes rise at least
+// BLINK_RISE over the open baseline (and past BLINK_MIN_CLOSED); open again =
+// back within BLINK_REOPEN of it. A still photo never rises; a wink raises only
+// one eye (the less-closed eye is what is compared).
+export const BLINK_RISE = 0.2, BLINK_MIN_CLOSED = 0.3, BLINK_REOPEN = 0.1;
+
 export function createChallenge(type) {
-  const c = { type, phase: 0, done: type === "none" };
-  c.reset = () => { c.phase = 0; c.done = c.type === "none"; };
+  const c = { type, phase: 0, done: type === "none", base: null };
+  c.reset = () => { c.phase = 0; c.done = c.type === "none"; c.base = null; };
+  c.closedAt = () => Math.min(EYES_CLOSED, Math.max(BLINK_MIN_CLOSED, (c.base ?? 0) + BLINK_RISE));
   c.step = (face) => {
     if (c.done || !face) return c.done;
     if (c.type === "blink") {
-      if (c.phase === 0 && face.eyesClosed > EYES_CLOSED) c.phase = 1;
-      else if (c.phase === 1 && face.eyeClosed < EYES_OPEN) c.done = true;
+      const both = face.eyesClosed, either = face.eyeClosed;
+      if (c.base === null) c.base = both;
+      if (c.phase === 0) {
+        if (both >= c.closedAt()) c.phase = 1;
+        else c.base = 0.85 * c.base + 0.15 * both;   // follow the open level (lighting, squint)
+      } else if (either <= Math.max(EYES_OPEN, c.base + BLINK_REOPEN)) {
+        c.done = true;
+      }
     } else if (c.type === "turn") {
       if (c.phase === 0 && Math.abs(face.yaw) > YAW_TURNED) c.phase = 1;
       else if (c.phase === 1 && Math.abs(face.yaw) < YAW_FRONTAL * 0.7) c.done = true;
@@ -366,14 +412,24 @@ let landmarkerPromise = null;
 function loadLandmarker() {
   // One model per page, shared across retakes.
   landmarkerPromise = landmarkerPromise || (async () => {
-    const { FilesetResolver, PoseLandmarker } = await import(MP_BUNDLE);
-    const files = await FilesetResolver.forVisionTasks(MP_WASM);
+    const [{ PoseLandmarker }, files] = await Promise.all([import(MP_BUNDLE), visionFiles()]);
     const opts = (delegate) => ({ baseOptions: { modelAssetPath: MP_MODEL, delegate }, runningMode: "VIDEO", numPoses: 1 });
-    try { return await PoseLandmarker.createFromOptions(files, opts("GPU")); }
-    catch (_) { return await PoseLandmarker.createFromOptions(files, opts("CPU")); }
+    try { return warmUp(await withDeadline(PoseLandmarker.createFromOptions(files, opts("GPU")), GPU_SETUP_MS, "pose GPU")); }
+    catch (_) { return warmUp(await withDeadline(PoseLandmarker.createFromOptions(files, opts("CPU")), CPU_SETUP_MS, "pose CPU")); }
   })();
   landmarkerPromise.catch(() => { landmarkerPromise = null; });
   return landmarkerPromise;
+}
+
+/**
+ * Download, compile and warm up both camera models ahead of time (e.g. while
+ * the app shows its config screen). createCapture().start() then finds them
+ * ready instead of spending seconds on "Loading the camera guide…".
+ * Resolves true when both loaded.
+ */
+export async function preload() {
+  const r = await Promise.allSettled([loadLandmarker(), loadFaceLandmarker()]);
+  return r.every((x) => x.status === "fulfilled");
 }
 
 /**
@@ -402,8 +458,9 @@ export function createCapture(stage, options = {}) {
     maxSide = 1600, zoomLevels = ZOOM_LEVELS, onLight = () => {}, flash: flashMode = "auto",
     onChallenge = () => {},
   } = options;
+  const pickChallenge = (t) => (t === "random" ? (Math.random() < 0.5 ? "blink" : "turn") : t);
   const challengeType = options.challenge === "random"
-    ? (Math.random() < 0.5 ? "blink" : "turn")
+    ? pickChallenge("random")
     : ["blink", "turn"].includes(options.challenge) ? options.challenge : "none";
   let zoom = clampZoom(options.zoom ?? 1);
 
@@ -515,7 +572,10 @@ export function createCapture(stage, options = {}) {
     rafId = requestAnimationFrame(loop);
     if (!landmarker || video.readyState < 2 || !lay || capturing) return; // capturing: keep Capture locked
     const ts = performance.now();
-    if (ts - lastTs < 50) return; // ~20 fps: face every frame (blinks are short), pose every other
+    // While the challenge runs the face model gets the frames: a blink lasts
+    // ~150 ms, so it needs ~25 face readings a second; pose runs every 3rd.
+    const pending = !challenge.done;
+    if (ts - lastTs < (pending ? 30 : 50)) return;
     lastTs = ts;
     tick++;
 
@@ -525,11 +585,17 @@ export function createCapture(stage, options = {}) {
         faceSeenTs = ts;
         noseTrail.push({ t: ts, ...face.nose });
         while (noseTrail.length && ts - noseTrail[0].t > STILL_MS) noseTrail.shift();
+        // Count the challenge on every good face frame, not only when the body
+        // framing is also perfect: a blink during a framing flicker still counts.
+        if (pending && face.count === 1 && (challenge.type === "turn"
+            || (Math.abs(face.yaw) <= YAW_FRONTAL * 1.5 && Math.abs(face.pitch) <= PITCH_FRONTAL * 1.5))) {
+          stepChallenge();
+        }
       } else if (ts - faceSeenTs > FACE_LOST_RESET_MS && challenge.type !== "none" && (challenge.done || challenge.phase)) {
         resetChallenge(); // a different person could step in after the challenge
       }
     }
-    if (tick % 2 === 1 || !poseLm) poseLm = landmarker.detectForVideo(video, ts).landmarks?.[0] || null;
+    if (tick % (pending ? 3 : 2) === 1 || !poseLm) poseLm = landmarker.detectForVideo(video, ts).landmarks?.[0] || null;
 
     if (!poseLm) {
       skeleton.innerHTML = "";
@@ -543,7 +609,6 @@ export function createCapture(stage, options = {}) {
 
     const problem = assess(pts, geo) || faceProblem();
     if (!problem) {
-      stepChallenge();
       if (!challenge.done) {
         // framed well: now the liveness challenge, Capture still locked
         setBanner(`${CHALLENGE_TEXT[challenge.type]}${challenge.phase ? " …" : ""}`, false);
@@ -797,6 +862,12 @@ export function createCapture(stage, options = {}) {
 
   return {
     start, stop, capture, setZoom,
+    /** Change the liveness challenge ("none" | "blink" | "turn" | "random") before start(). */
+    setChallenge(t) {
+      const p = pickChallenge(t || "blink");
+      challenge.type = ["blink", "turn", "none"].includes(p) ? p : "blink";
+      resetChallenge();
+    },
     get zoom() { return zoom; }, get live() { return !!stream; }, get ready() { return ready; },
   };
 }

@@ -20,7 +20,7 @@ import math
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from zepiris.deps import SettingsDep
 from zepiris.schemas.checkpoint import ALL_CHECKS
@@ -121,8 +121,7 @@ def _selfie_config(raw: dict, allow_threshold_override: bool = False) -> dict:
     return cfg
 
 
-@router.post("/ui/selfie", include_in_schema=False)
-async def ui_selfie_post(request: Request, settings: SettingsDep) -> HTMLResponse:
+async def _read_config_body(request: Request) -> dict:
     if request.headers.get("content-type", "").startswith("application/json"):
         try:
             raw = await request.json()
@@ -130,10 +129,28 @@ async def ui_selfie_post(request: Request, settings: SettingsDep) -> HTMLRespons
             raise HTTPException(status_code=400, detail="body is not valid JSON") from None
         if not isinstance(raw, dict):
             raise HTTPException(status_code=400, detail="JSON body must be an object")
-    else:
-        # a base64 source selfie easily exceeds Starlette's 1 MB multipart part default
-        raw = dict(await request.form(max_part_size=_MAX_SOURCE_B64 + 1024))
+        return raw
+    # a base64 source selfie easily exceeds Starlette's 1 MB multipart part default
+    return dict(await request.form(max_part_size=_MAX_SOURCE_B64 + 1024))
+
+
+@router.post("/ui/selfie", include_in_schema=False)
+async def ui_selfie_post(request: Request, settings: SettingsDep) -> HTMLResponse:
+    raw = await _read_config_body(request)
     return _render_selfie(_selfie_config(raw, getattr(settings, "allow_threshold_override", False)))
+
+
+@router.post("/ui/selfie/config", include_in_schema=False)
+async def ui_selfie_config(request: Request, settings: SettingsDep) -> JSONResponse:
+    """Validate a checkpoint config for a selfie page that is already open.
+
+    The app keeps the selfie page loaded in the background (its camera models
+    take seconds to download and compile) and hands it the rider's config when
+    Open selfie is tapped; the same rules as ``POST /ui/selfie`` apply.
+    """
+    raw = await _read_config_body(request)
+    cfg = _selfie_config(raw, getattr(settings, "allow_threshold_override", False))
+    return JSONResponse(cfg, headers={"Cache-Control": "no-store"})  # carries the enrolled selfie
 
 
 @router.get("/ui/static/{name}", include_in_schema=False)

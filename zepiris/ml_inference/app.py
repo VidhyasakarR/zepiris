@@ -137,6 +137,9 @@ class MLServiceSettings(BaseSettings):
     # back to the colour/logo rule. Build the encoder with
     # scripts/export_dresscode_model.py.
     dresscode_classifier_enabled: bool = True
+    # Logo check by OCR: LOADSHARE letters (partial runs ok) read on blue fabric.
+    # Replaces the learned logo head, which passed any chest print.
+    dresscode_logo_ocr_enabled: bool = True
     dresscode_encoder_path: str = "/app/models/siglip2_base_vision.onnx"
     dresscode_head_path: str = ""
 
@@ -419,6 +422,15 @@ async def lifespan(app: FastAPI):
                     logger.info("Dress code: learned classifier (%s)", encoder)
                 except Exception:
                     logger.exception("Uniform classifier failed to load; using the colour/logo rule")
+        logo_reader = None
+        if s.dresscode_logo_ocr_enabled:
+            try:
+                from zepiris.ml_inference.logo_text import LoadshareTextDetector
+
+                logo_reader = LoadshareTextDetector()
+                logger.info("Dress code: logo decided by OCR (LOADSHARE on blue)")
+            except Exception:
+                logger.exception("Logo OCR unavailable (pip install rapidocr_onnxruntime); using the logo head")
         try:
             app.state.dresscode_service = DresscodeDetectionService(
                 app.state.face_embedding_service,
@@ -434,6 +446,7 @@ async def lifespan(app: FastAPI):
                 min_roi_pixels=s.dresscode_min_roi_pixels,
                 logo_template_path=s.dresscode_logo_template_path or None,
                 classifier=uniform_classifier,
+                logo_reader=logo_reader,
             )
         except Exception:
             logger.exception("Failed to build DresscodeDetectionService")

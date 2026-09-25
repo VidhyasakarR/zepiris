@@ -33,6 +33,12 @@ RUN pip install --no-cache-dir "poetry==${POETRY_VERSION}" \
     && pip install --no-cache-dir . \
     && pip uninstall -y poetry
 
+# Logo check OCR (PP-OCR ONNX models ship inside the wheel, ~15 MB). --no-deps:
+# rapidocr asks for the GUI opencv-python, which would clash with the headless
+# build above (both are "cv2"); its other deps are installed explicitly.
+RUN pip install --no-cache-dir --no-deps "rapidocr_onnxruntime==1.4.4" \
+    && pip install --no-cache-dir "pyclipper==1.4.0" "shapely==2.1.2" "PyYAML>=6" "six>=1.16" "tqdm>=4.66"
+
 RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin appuser \
     && chown -R appuser:appuser /app
 
