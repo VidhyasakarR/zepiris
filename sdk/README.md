@@ -71,9 +71,9 @@ Nothing is published (the package is `"private": true`). Build the tarball, then
 
 ```bash
 cd sdk/react-native-lsn-capture && yarn install && yarn typescript && yarn test
-yarn pack:dist                     # → sdk/dist/loadshare-rn-lsn-capture-1.0.0.tgz
-# in the app: cp …/sdk/dist/loadshare-rn-lsn-capture-1.0.0.tgz vendor/
-#             yarn add file:./vendor/loadshare-rn-lsn-capture-1.0.0.tgz
+yarn pack:dist                     # → sdk/dist/loadshare-rn-lsn-capture-1.0.1.tgz
+# in the app: cp …/sdk/dist/loadshare-rn-lsn-capture-1.0.1.tgz vendor/
+#             yarn add file:./vendor/loadshare-rn-lsn-capture-1.0.1.tgz
 ```
 
 The host app requests the CAMERA runtime permission itself, and needs RN 0.72+, `minSdk` 24 and `compileSdk` 35.

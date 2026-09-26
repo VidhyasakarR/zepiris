@@ -1,6 +1,6 @@
 {
   "name": "@loadshare/rn-lsn-capture",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Android-only React Native SDK for the Zepiris LSN checkpoint selfie: native capture screen with liveness, and /v1/checkpoint/score",
   "main": "lib/commonjs/index",
   "module": "lib/module/index",

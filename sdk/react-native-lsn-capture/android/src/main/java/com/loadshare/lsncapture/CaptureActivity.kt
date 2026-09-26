@@ -24,7 +24,6 @@ import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
-import androidx.activity.ComponentActivity
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
@@ -62,7 +61,7 @@ import kotlin.math.max
  * - Analysis: 640×480, same 4:3 field of view, straight to ML Kit on a worker
  *   thread: no frame copies, ~20-30 detections/s, so a 150 ms blink is caught.
  */
-class CaptureActivity : ComponentActivity() {
+class CaptureActivity : LsnBaseActivity() {
     companion object {
         const val EXTRA_CHALLENGE = "challenge"
         const val EXTRA_LIGHT = "light"           // start with the screen light (💡) on

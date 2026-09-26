@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.1 — 2026-09-26
+
+- Fix: Kotlin compile error `CaptureActivity is not abstract and does not implement abstract member getViewModelStore` in host apps that force `androidx.lifecycle:lifecycle-viewmodel` below 2.6 (titan-rider-app forces 2.5.1) while `androidx.activity` is 1.9.x. `CaptureActivity` now extends a small Java shim, `LsnBaseActivity`, which re-declares the ViewModel owner getters. No behaviour change.
+
 ## 1.0.0 — 2026-09-26
 
 First release: the React Native port of the Flutter `lsn_capture_sdk` (1.6.3) capture screen.

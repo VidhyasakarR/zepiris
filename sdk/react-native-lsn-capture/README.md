@@ -25,8 +25,8 @@ yarn pack:dist            # → zepiris/sdk/dist/loadshare-rn-lsn-capture-<ver>.
 Copy it into the app and install it with `file:`:
 
 ```bash
-mkdir -p vendor && cp <zepiris>/sdk/dist/loadshare-rn-lsn-capture-1.0.0.tgz vendor/
-yarn add file:./vendor/loadshare-rn-lsn-capture-1.0.0.tgz
+mkdir -p vendor && cp <zepiris>/sdk/dist/loadshare-rn-lsn-capture-1.0.1.tgz vendor/
+yarn add file:./vendor/loadshare-rn-lsn-capture-1.0.1.tgz
 npx react-native config | grep -i lsn    # autolinking picked up LsnCapturePackage
 ```
 
