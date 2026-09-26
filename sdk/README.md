@@ -63,7 +63,7 @@ The LSN Checkpoint app (`mobile/lsn_checkpoint`) is a working example: `lib/scre
 cd sdk && rm -f dist/lsn_capture_sdk-1.6.3.zip && zip -rq dist/lsn_capture_sdk-1.6.3.zip lsn_capture_sdk -x '*/build/*' '*/.dart_tool/*' '*.iml' '*/.idea/*' '*/.gradle/*' '*/local.properties'
 ```
 
-## React Native (`react-native-lsn-capture/`, `@loadshare/rn-lsn-capture` v1.0.0)
+## React Native (`react-native-lsn-capture/`, `@loadshare/rn-lsn-capture` v1.0.2)
 
 The same native camera screen (the Kotlin `CaptureActivity` / `FaceEngine` / `Checks`, copied over) as an Android-only React Native module, plus the `/v1/checkpoint/score` call made from Kotlin. API: `isSupported`, `warmUp`, `capture`, `score`, `start`, `toScores`. Errors carry a `.code`. Full docs: [`react-native-lsn-capture/README.md`](react-native-lsn-capture/README.md).
 
@@ -71,9 +71,9 @@ Nothing is published (the package is `"private": true`). Build the tarball, then
 
 ```bash
 cd sdk/react-native-lsn-capture && yarn install && yarn typescript && yarn test
-yarn pack:dist                     # → sdk/dist/loadshare-rn-lsn-capture-1.0.1.tgz
-# in the app: cp …/sdk/dist/loadshare-rn-lsn-capture-1.0.1.tgz vendor/
-#             yarn add file:./vendor/loadshare-rn-lsn-capture-1.0.1.tgz
+yarn pack:dist                     # → sdk/dist/loadshare-rn-lsn-capture-1.0.2.tgz
+# in the app: cp …/sdk/dist/loadshare-rn-lsn-capture-1.0.2.tgz vendor/
+#             yarn add file:./vendor/loadshare-rn-lsn-capture-1.0.2.tgz
 ```
 
-The host app requests the CAMERA runtime permission itself, and needs RN 0.72+, `minSdk` 24 and `compileSdk` 35.
+The host app requests the CAMERA runtime permission itself, and needs RN 0.72+ (old or new architecture), `minSdk` 24, `compileSdk` 35, Kotlin 2.0+ and Google Play Services on the phone. The returned JPEG is the host's to delete after upload. It is a native change: it needs a new store build, not CodePush.

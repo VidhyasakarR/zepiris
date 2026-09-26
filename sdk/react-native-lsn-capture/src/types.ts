@@ -17,25 +17,35 @@ export type LsnErrorCode =
   | 'server' // non-2xx, or a reply without scores
   | 'unsupported_platform'; // not Android, or the native module is not linked
 
+/**
+ * Every SDK rejection. `message` is developer-facing (English, may include
+ * server text): show your own copy per `code` to riders.
+ */
 export interface LsnError extends Error {
   code: LsnErrorCode;
+  /** The native code when it was not an LsnErrorCode (then `code` is the fallback). */
+  nativeCode?: string;
 }
 
 export interface LsnCaptureOptions {
-  /** Default 'blink'. */
+  /** Default 'blink'. Case-insensitive; an unknown value falls back to 'blink'. */
   challenge?: LsnChallenge;
   /** Start with the screen light on (default false). */
   light?: boolean;
   /** Long side of the photo in px; 0 = camera's full resolution (default 2592). */
   maxSide?: number;
-  /** JPEG quality 60-100 (default 92). */
+  /** JPEG quality 60-100 (default 92; clamped). */
   jpegQuality?: number;
-  /** Starting exposure compensation in EV, -2..+2 (default 0). */
+  /** Starting exposure compensation in EV, -2..+2 (default 0; clamped). */
   brightness?: number;
 }
 
 export interface LsnCaptureResult {
-  /** Absolute path of the JPEG in the app cache (not deleted by the SDK). */
+  /**
+   * Absolute path of the JPEG in the app cache. The host owns it: delete it
+   * after upload. The SDK only removes its photos older than 10 minutes, the
+   * next time the capture screen opens.
+   */
   path: string;
   /** 'file://' + path */
   uri: string;
@@ -47,11 +57,15 @@ export interface LsnCaptureResult {
 }
 
 export interface LsnScoreOptions {
-  /** Server root, e.g. https://3-108-193-187.sslip.io (trailing slashes dropped). */
+  /**
+   * Server root, e.g. https://3-108-193-187.sslip.io (trailing slashes dropped;
+   * no query / fragment). Use https in production: http:// works only where the
+   * app's network security config allows cleartext (else 'invalid_config').
+   */
   apiBase: string;
   /** Default all three. */
   checks?: LsnCheck[];
-  /** Local JPEG to score (plain path or file:// URI). Exactly one of faceCheckPath / faceCheckS3. */
+  /** Local JPEG to score (plain path or file:// URI), at most 5 MiB. Exactly one of faceCheckPath / faceCheckS3. */
   faceCheckPath?: string;
   /** S3/HTTP link of the photo to score. */
   faceCheckS3?: string;
@@ -59,9 +73,13 @@ export interface LsnScoreOptions {
   sourceSelfieS3?: string;
   /** Enrolled selfie for face_match (base64 JPEG). */
   sourceSelfieB64?: string;
-  /** Default 40000. */
+  /** Whole-call timeout in ms, 1..600000 (default 40000). */
   timeoutMs?: number;
-  /** Extra request headers (e.g. a gateway token). */
+  /**
+   * Extra request headers (e.g. a gateway token): RFC 9110 names, printable
+   * ASCII values (no CR / LF). Content-Type, Content-Length, Host, Connection
+   * and Transfer-Encoding are set by the SDK and ignored here.
+   */
   headers?: Record<string, string>;
 }
 

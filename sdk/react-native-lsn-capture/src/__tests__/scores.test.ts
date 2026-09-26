@@ -87,3 +87,49 @@ describe('toScores', () => {
     expect(s.imageSha256).toBeNull();
   });
 });
+
+describe('toScores (defensive)', () => {
+  it.each([[null], [undefined], [[]], ['str'], [42]])('returns an empty result for %p', (raw) => {
+    const s = toScores(raw);
+    expect(s).toMatchObject({
+      requestId: '', scoredAt: null, checksRequested: [], faceSimilarity: null, liveness: null,
+      faceDetected: null, dressColor: null, logo: null, logoRead: null, imageSha256: null, raw: {},
+    });
+  });
+
+  it('nulls wrongly-typed fields', () => {
+    const s = toScores({
+      requestId: 7,
+      scoredAt: 1,
+      checksRequested: ['logo', 3, null, 'face_match'],
+      scores: {
+        face_match: { similarity: '0.83', liveness: NaN, faceDetected: 'true' },
+        dress_color: { score: Infinity },
+        logo: { score: [0.9], read: ['AMAZON'] },
+      },
+      image: { sha256: 123 },
+    });
+    expect(s.requestId).toBe('');
+    expect(s.scoredAt).toBeNull();
+    expect(s.checksRequested).toEqual(['logo', 'face_match']);
+    expect(s.faceSimilarity).toBeNull();
+    expect(s.liveness).toBeNull();
+    expect(s.faceDetected).toBeNull();
+    expect(s.dressColor).toBeNull();
+    expect(s.logo).toBeNull();
+    expect(s.logoRead).toBeNull();
+    expect(s.imageSha256).toBeNull();
+  });
+
+  it('treats arrays as missing objects', () => {
+    const s = toScores({ scores: [{ face_match: { similarity: 1 } }], image: ['x'] });
+    expect(s.faceSimilarity).toBeNull();
+    expect(s.imageSha256).toBeNull();
+  });
+
+  it('keeps negative and zero scores', () => {
+    const s = toScores({ scores: { face_match: { similarity: -0.1 }, logo: { score: 0 } } });
+    expect(s.faceSimilarity).toBe(-0.1);
+    expect(s.logo).toBe(0);
+  });
+});

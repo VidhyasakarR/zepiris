@@ -14,6 +14,9 @@ export const LSN_ERROR_CODES: readonly LsnErrorCode[] = [
   'unsupported_platform',
 ];
 
+const isLsnCode = (c: unknown): c is LsnErrorCode =>
+  typeof c === 'string' && (LSN_ERROR_CODES as readonly string[]).includes(c);
+
 export function lsnError(code: LsnErrorCode, message?: string): LsnError {
   const e = new Error(message || code) as LsnError;
   e.name = 'LsnError';
@@ -21,20 +24,35 @@ export function lsnError(code: LsnErrorCode, message?: string): LsnError {
   return e;
 }
 
-/** A native promise rejection (or anything thrown) → an Error whose `.code` is an LsnErrorCode. */
+/**
+ * A native promise rejection (or anything thrown) → an Error whose `.code` is
+ * an LsnErrorCode. An unknown code becomes `fallback`; the original code is
+ * kept in `.nativeCode` and the original message is never replaced.
+ */
 export function toLsnError(e: unknown, fallback: LsnErrorCode): LsnError {
-  const anyE = e as { code?: unknown; message?: unknown } | null | undefined;
-  const code =
-    typeof anyE?.code === 'string' &&
-    (LSN_ERROR_CODES as readonly string[]).includes(anyE.code)
-      ? (anyE.code as LsnErrorCode)
-      : fallback;
-  const message =
-    typeof anyE?.message === 'string' && anyE.message ? anyE.message : code;
+  const src = (typeof e === 'object' && e !== null ? e : {}) as {
+    code?: unknown;
+    message?: unknown;
+  };
+  const code = isLsnCode(src.code) ? src.code : fallback;
   if (e instanceof Error) {
     const err = e as LsnError;
+    if (!isLsnCode(src.code) && src.code != null) {
+      err.nativeCode = String(src.code);
+    }
     err.code = code;
+    if (!err.message) err.message = code;
     return err;
   }
-  return lsnError(code, message);
+  const message =
+    typeof src.message === 'string' && src.message
+      ? src.message
+      : typeof e === 'string' && e
+        ? e
+        : code;
+  const err = lsnError(code, message);
+  if (!isLsnCode(src.code) && src.code != null) {
+    err.nativeCode = String(src.code);
+  }
+  return err;
 }

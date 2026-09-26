@@ -18,6 +18,12 @@ def safeExtGet(prop, fallback) {
     rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
 }
 
+// The SDK version (User-Agent) comes from package.json, so it can't drift.
+def sdkVersion = {
+    def pkg = file('../package.json')
+    pkg.exists() ? new groovy.json.JsonSlurper().parse(pkg).version : 'unknown'
+}()
+
 android {
     namespace 'com.loadshare.lsncapture'
     compileSdkVersion safeExtGet('compileSdkVersion', 35)
@@ -26,6 +32,11 @@ android {
         minSdkVersion safeExtGet('minSdkVersion', 24)
         targetSdkVersion safeExtGet('targetSdkVersion', 35)
         consumerProguardFiles 'consumer-rules.pro'
+        buildConfigField 'String', 'SDK_VERSION', "\"${sdkVersion}\""
+    }
+
+    buildFeatures {
+        buildConfig true
     }
 
     buildTypes {
@@ -78,4 +89,6 @@ dependencies {
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'org.jetbrains.kotlin:kotlin-test'
     testImplementation 'org.json:json:20231013' // real org.json for ScoreClient tests (Android's is a stub on the JVM)
+    testImplementation 'com.squareup.okhttp3:okhttp:4.9.2'          // RN 0.77's version (compile API floor)
+    testImplementation 'com.squareup.okhttp3:mockwebserver:4.9.2'   // ScoreClient end-to-end tests
 }

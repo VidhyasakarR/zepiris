@@ -10,6 +10,7 @@ import {
 import type {
   LsnCaptureOptions,
   LsnCaptureResult,
+  LsnChallenge,
   LsnScoreOptions,
   LsnScores,
   LsnStartOptions,
@@ -19,6 +20,8 @@ import type {
 
 export * from './types';
 export { toScores } from './scores';
+
+const CHALLENGES: readonly LsnChallenge[] = ['none', 'blink', 'turn', 'random'];
 
 function native(): NativeLsnCaptureSpec {
   if (!NativeLsnCapture) {
@@ -30,12 +33,34 @@ function native(): NativeLsnCaptureSpec {
   return NativeLsnCapture;
 }
 
-/** true on Android when the native module is linked. */
+const finite = (v: unknown): number | undefined =>
+  typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+/** The capture options as sent to native: defaults filled in, bad values coerced (never throws). */
+function captureArgs(opts: LsnCaptureOptions | null | undefined) {
+  const o = opts ?? {};
+  const c = typeof o.challenge === 'string' ? o.challenge.trim().toLowerCase() : '';
+  return {
+    challenge: (CHALLENGES as readonly string[]).includes(c) ? c : 'blink',
+    light: o.light === true,
+    maxSide: Math.max(0, Math.round(finite(o.maxSide) ?? 2592)),
+    jpegQuality: clamp(Math.round(finite(o.jpegQuality) ?? 92), 60, 100),
+    brightness: clamp(finite(o.brightness) ?? 0, -2, 2),
+  };
+}
+
+/** true on Android when the native module is linked. Never throws. */
 export function isSupported(): boolean {
   return NativeLsnCapture != null;
 }
 
-/** Load the face model and CameraX ahead of time (call when the screen before the capture shows). */
+/**
+ * Load the face model and CameraX ahead of time (call when the screen before
+ * the capture shows). Resolves with modelReady=false instead of rejecting when
+ * the model is not there; can take long on first run (model download), so
+ * don't await it on the critical path.
+ */
 export async function warmUp(): Promise<LsnWarmUpResult> {
   const m = native();
   try {
@@ -51,13 +76,7 @@ export async function capture(
 ): Promise<LsnCaptureResult> {
   const m = native();
   try {
-    const r = await m.capture({
-      challenge: opts.challenge ?? 'blink',
-      light: opts.light ?? false,
-      maxSide: opts.maxSide ?? 2592,
-      jpegQuality: opts.jpegQuality ?? 92,
-      brightness: opts.brightness ?? 0,
-    });
+    const r = await m.capture(captureArgs(opts));
     return {
       path: r.path,
       uri: r.uri ?? `file://${r.path}`,
@@ -73,6 +92,7 @@ export async function capture(
 /** POST {apiBase}/v1/checkpoint/score. The file is read and base64-encoded natively. */
 export async function score(opts: LsnScoreOptions): Promise<LsnScores> {
   const m = native();
+  validateScoreOptions(opts, true);
   try {
     const raw = await m.score({
       apiBase: opts.apiBase,
@@ -94,14 +114,10 @@ export async function score(opts: LsnScoreOptions): Promise<LsnScores> {
 export async function start(opts: LsnStartOptions): Promise<LsnStartResult> {
   native();
   validateScoreOptions(opts);
-  const {
-    challenge,
-    light,
-    maxSide,
-    jpegQuality,
-    brightness,
-    ...scoreOpts
-  } = opts;
+  const { challenge, light, maxSide, jpegQuality, brightness, ...rest } = opts;
+  // The captured photo is the one scored: drop any photo source the caller passed.
+  const { faceCheckPath: _p, faceCheckS3: _s, ...scoreOpts } =
+    rest as LsnScoreOptions;
   const shot = await capture({
     challenge,
     light,
