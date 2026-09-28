@@ -1,0 +1,10 @@
+node_modules/
+lib/
+android/build/
+android/.gradle/
+android/.idea/
+android/local.properties
+*.iml
+*.tgz
+.DS_Store
+# sdk/dist/*.tgz lives outside this folder, so the packed SDK stays committable.
