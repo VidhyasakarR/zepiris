@@ -47,6 +47,8 @@ function captureArgs(opts: LsnCaptureOptions | null | undefined) {
     maxSide: Math.max(0, Math.round(finite(o.maxSide) ?? 2592)),
     jpegQuality: clamp(Math.round(finite(o.jpegQuality) ?? 92), 60, 100),
     brightness: clamp(finite(o.brightness) ?? 0, -2, 2),
+    // Only an explicit false turns it off: hosts drive this from remote config.
+    autoCapture: o.autoCapture !== false,
   };
 }
 
@@ -114,7 +116,8 @@ export async function score(opts: LsnScoreOptions): Promise<LsnScores> {
 export async function start(opts: LsnStartOptions): Promise<LsnStartResult> {
   native();
   validateScoreOptions(opts);
-  const { challenge, light, maxSide, jpegQuality, brightness, ...rest } = opts;
+  const { challenge, light, maxSide, jpegQuality, brightness, autoCapture, ...rest } =
+    opts;
   // The captured photo is the one scored: drop any photo source the caller passed.
   const { faceCheckPath: _p, faceCheckS3: _s, ...scoreOpts } =
     rest as LsnScoreOptions;
@@ -124,6 +127,7 @@ export async function start(opts: LsnStartOptions): Promise<LsnStartResult> {
     maxSide,
     jpegQuality,
     brightness,
+    autoCapture,
   });
   const scores = await score({ ...scoreOpts, faceCheckPath: shot.path });
   return { capture: shot, scores };

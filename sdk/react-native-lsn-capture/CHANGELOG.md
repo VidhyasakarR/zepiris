@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.0 — 2026-10-08
+
+- **Auto capture (`capture({ autoCapture })`, default `true`):** the screen takes the photo by itself once the face and T-shirt are framed, the liveness challenge is passed and every live check has held for 700 ms. The Capture button is hidden; the banner says what to fix ("Perfect — hold still" when it is about to shoot). Pass `autoCapture: false` for the old tap-to-capture screen. Only an explicit `false` disables it.
+
 ## 1.0.2 — 2026-09-26
 
 Hardening from a production-readiness review. The public API is unchanged; additions are optional (`LsnError.nativeCode`, `toScores` accepting `unknown`).

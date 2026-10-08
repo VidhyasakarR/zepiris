@@ -60,7 +60,7 @@ describe('capture', () => {
     mockNative.capture.mockResolvedValue(shot);
     await expect(load().capture()).resolves.toEqual(shot);
     expect(mockNative.capture).toHaveBeenCalledWith({
-      challenge: 'blink', light: false, maxSide: 2592, jpegQuality: 92, brightness: 0,
+      challenge: 'blink', light: false, maxSide: 2592, jpegQuality: 92, brightness: 0, autoCapture: true,
     });
   });
 
@@ -69,12 +69,16 @@ describe('capture', () => {
     const sdk = load();
     await sdk.capture({ challenge: ' TURN ' as never, maxSide: NaN, jpegQuality: 150, brightness: -9, light: 'yes' as never });
     expect(mockNative.capture).toHaveBeenLastCalledWith({
-      challenge: 'turn', light: false, maxSide: 2592, jpegQuality: 100, brightness: -2,
+      challenge: 'turn', light: false, maxSide: 2592, jpegQuality: 100, brightness: -2, autoCapture: true,
     });
     await sdk.capture({ challenge: 'wink' as never, maxSide: -5, jpegQuality: 10 });
     expect(mockNative.capture).toHaveBeenLastCalledWith({
-      challenge: 'blink', light: false, maxSide: 0, jpegQuality: 60, brightness: 0,
+      challenge: 'blink', light: false, maxSide: 0, jpegQuality: 60, brightness: 0, autoCapture: true,
     });
+    await sdk.capture({ autoCapture: false });
+    expect(mockNative.capture).toHaveBeenLastCalledWith(expect.objectContaining({ autoCapture: false }));
+    await sdk.capture({ autoCapture: 'no' as never });
+    expect(mockNative.capture).toHaveBeenLastCalledWith(expect.objectContaining({ autoCapture: true }));
     await sdk.capture(null as never);
     expect(mockNative.capture).toHaveBeenLastCalledWith(expect.objectContaining({ challenge: 'blink' }));
   });

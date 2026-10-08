@@ -38,6 +38,12 @@ export interface LsnCaptureOptions {
   jpegQuality?: number;
   /** Starting exposure compensation in EV, -2..+2 (default 0; clamped). */
   brightness?: number;
+  /**
+   * Take the photo by itself once the face and T-shirt are framed, the
+   * challenge is passed and the rider holds still; the Capture button is
+   * hidden (default true). false: the rider taps Capture.
+   */
+  autoCapture?: boolean;
 }
 
 export interface LsnCaptureResult {
