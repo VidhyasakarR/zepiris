@@ -27,6 +27,14 @@ class ChecksTest {
     @Test fun turningOkDuringTurn() = assertNull(liveProblem(listOf(good(yaw = 25f)), luma = 120f, turning = true))
     @Test fun eyesShut() = assertEquals("Open your eyes", liveProblem(listOf(good(l = 0.1f, r = 0.1f)), luma = 120f))
     @Test fun eyesShutOkMidBlink() = assertNull(liveProblem(listOf(good(l = 0.1f, r = 0.1f)), luma = 120f, blinking = true))
+    @Test fun strictWellFramedPasses() = assertNull(liveProblem(listOf(good()), luma = 120f, strict = true))
+    @Test fun strictOffCentre() = assertEquals("Move your face to the centre", liveProblem(listOf(good(left = 0.25f)), luma = 120f, strict = true))
+    @Test fun lenientAllowsSlightOffCentre() = assertNull(liveProblem(listOf(good(left = 0.25f)), luma = 120f))
+    @Test fun strictFaceTooLow() = assertTrue(liveProblem(listOf(good(top = 0.26f)), luma = 120f, strict = true)!!.contains("tilt the phone down"))
+    @Test fun strictFaceTooHigh() = assertTrue(liveProblem(listOf(good(top = 0.02f)), luma = 120f, strict = true)!!.contains("tilt the phone up"))
+    @Test fun strictTilted() = assertTrue(liveProblem(listOf(good().copy(roll = 10f)), luma = 120f, strict = true)!!.startsWith("Keep your head"))
+    @Test fun strictSlightTurn() = assertEquals("Look straight at the camera", liveProblem(listOf(good(yaw = 10f)), luma = 120f, strict = true))
+    @Test fun holdingToleratesEdgeWobble() = assertNull(liveProblem(listOf(good(yaw = 9.5f)), luma = 120f, strict = true, holding = true))
     @Test fun moving() = assertEquals("Hold still", liveProblem(listOf(good()), luma = 120f, movement = 0.08f))
 
     private fun run(t: ChallengeType, frames: List<FaceSample>): Boolean {

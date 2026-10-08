@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.2 — 2026-10-08
+
+Same code as the final 1.1.1 build; republished under a new version because 1.1.1 was packed twice and yarn caches by version.
+
+## 1.1.1 — 2026-10-08
+
+- **Auto capture framing is stricter:** with no tap to confirm, the shot now waits for the face to sit in the drawn oval (centre within 8% of the frame, horizontally and vertically) and the head and phone to be straight (yaw ≤ 8°, pitch ≤ 10°, roll ≤ 8°, down from 12° / 14° / 15°). The banner says which way to move or tilt. Tap-to-capture (`autoCapture: false`) keeps the old tolerances.
+- **Smoother auto capture:** a problem shorter than 300 ms (detector jitter, a micro move) no longer restarts the 700 ms hold; once framed, the strict limits widen by 30% so a rider resting on a limit doesn't flicker; the oval fills with a green ring while holding, so the shot never surprises the rider. It still only fires on a fully good frame.
+
 ## 1.1.0 — 2026-10-08
 
 - **Auto capture (`capture({ autoCapture })`, default `true`):** the screen takes the photo by itself once the face and T-shirt are framed, the liveness challenge is passed and every live check has held for 700 ms. The Capture button is hidden; the banner says what to fix ("Perfect — hold still" when it is about to shoot). Pass `autoCapture: false` for the old tap-to-capture screen. Only an explicit `false` disables it.
