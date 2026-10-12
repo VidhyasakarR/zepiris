@@ -245,10 +245,13 @@ class DresscodeDetectionService:
         """Decide ``logo`` by reading LOADSHARE on blue fabric (overrides the learned head)."""
         if self._logo_reader is None:
             return None
-        from zepiris.ml_inference.logo_text import MIN_SIMILARITY
+        from zepiris.ml_inference.logo_text import MIN_SIMILARITY, LogoOcrBusyError
 
         try:
             r = self._logo_reader.detect(image_rgb, detection.bbox if detection.face_detected else None)
+        except LogoOcrBusyError:
+            # Overload, not a verdict: surface it so the route answers 503.
+            raise
         except Exception:
             # Fail closed: an OCR error must not fall back to the head that
             # passes any chest print.

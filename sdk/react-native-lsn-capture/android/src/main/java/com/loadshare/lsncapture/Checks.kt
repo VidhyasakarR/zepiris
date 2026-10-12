@@ -58,6 +58,18 @@ object Limits {
     const val LOW_LIGHT = 90f
     const val TOO_BRIGHT = 225f
     const val STILL = 0.03f               // face centre travel over ~0.4 s, fraction of the frame
+
+    // Auto capture has no rider tap to confirm the framing, so it waits for the face to sit
+    // in the drawn oval (GuideView: centre x 0.5, y 0.26) and the head to be level.
+    const val OVAL_CX = 0.5f
+    const val OVAL_CY = 0.26f
+    const val STRICT_CENTRE_OFFSET = 0.08f
+    const val STRICT_YAW = 8f
+    const val STRICT_PITCH = 10f
+    const val STRICT_ROLL = 8f
+    // Hysteresis: once framed, the strict limits widen by this much, so a rider resting right on
+    // a limit doesn't flicker between "good" and "move" every frame.
+    const val STRICT_HOLD_SLACK = 1.3f
 }
 
 /** Share (0..1) of the chin-to-stomach T-shirt region inside the frame. */
@@ -76,7 +88,10 @@ fun liveProblem(
     movement: Float = 0f,
     turning: Boolean = false,
     blinking: Boolean = false,
+    strict: Boolean = false,
+    holding: Boolean = false,
 ): String? {
+    val k = if (holding) Limits.STRICT_HOLD_SLACK else 1f
     if (luma != null && luma < Limits.TOO_DARK) return "Too dark — move to a brighter place"
     if (faces.isEmpty()) return "Look at the camera"
     if (faces.size > 1) return "Only one person in the frame"
@@ -85,10 +100,13 @@ fun liveProblem(
     if (f.width < Limits.MIN_FACE_WIDTH) return "Come a little closer"
     if (f.width > Limits.MAX_FACE_WIDTH) return "Move the phone a little further away"
     if (abs(f.cx - 0.5f) > Limits.MAX_CENTRE_OFFSET) return "Move your face to the centre"
+    if (strict && abs(f.cx - Limits.OVAL_CX) > Limits.STRICT_CENTRE_OFFSET * k) return "Move your face to the centre"
+    if (strict && f.cy < Limits.OVAL_CY - Limits.STRICT_CENTRE_OFFSET * k) return "Fit your face in the oval — tilt the phone up a little"
+    if (strict && f.cy > Limits.OVAL_CY + Limits.STRICT_CENTRE_OFFSET * k) return "Fit your face in the oval — tilt the phone down a little"
     if (shirtVisible(f) < Limits.MIN_SHIRT_VISIBLE) return "Hold the phone further away — show your T-shirt"
-    if (!turning && abs(f.yaw) > Limits.MAX_YAW) return "Look straight at the camera"
-    if (abs(f.pitch) > Limits.MAX_PITCH) return "Keep your head level"
-    if (abs(f.roll) > Limits.MAX_ROLL) return "Keep your head straight"
+    if (!turning && abs(f.yaw) > (if (strict) Limits.STRICT_YAW * k else Limits.MAX_YAW)) return "Look straight at the camera"
+    if (abs(f.pitch) > (if (strict) Limits.STRICT_PITCH * k else Limits.MAX_PITCH)) return "Keep your head level"
+    if (abs(f.roll) > (if (strict) Limits.STRICT_ROLL * k else Limits.MAX_ROLL)) return "Keep your head and phone straight"
     if (!blinking && (f.eyesOpenMin ?: 1f) < Limits.EYES_OPEN) return "Open your eyes"
     if (!turning && !blinking && movement > Limits.STILL) return "Hold still"
     return null

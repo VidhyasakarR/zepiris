@@ -68,12 +68,19 @@ class CaptureActivity : LsnBaseActivity() {
         const val EXTRA_MAX_SIDE = "maxSide"      // long side of the photo in px; 0 = the camera's full resolution
         const val EXTRA_JPEG_QUALITY = "jpegQuality"
         const val EXTRA_BRIGHTNESS = "brightness" // starting exposure compensation, in EV (-2..+2)
+        const val EXTRA_AUTO_CAPTURE = "autoCapture" // shoot by itself once all checks pass; no Capture button
         private const val MAX_BYTES = 4_500_000   // the server takes <= 5 MB per image
         const val RESULT_PATH = "path"
         const val RESULT_JSON = "result"
         private const val TAG = "LsnCapture"
         private const val HOLD_MS = 400L
         private const val MODEL_WAIT_MS = 10_000L
+        // All checks must hold this long before an auto shot: one good frame in a
+        // flicker is not enough, and the rider gets a beat to settle.
+        private const val AUTO_HOLD_MS = 700L
+        // A one-frame detection wobble (ML Kit box jitter, a micro head move) must not restart the
+        // hold: the run survives problems shorter than this, it just doesn't shoot on a bad frame.
+        private const val AUTO_GRACE_MS = 300L
     }
 
     private lateinit var preview: PreviewView
@@ -190,6 +197,8 @@ class CaptureActivity : LsnBaseActivity() {
     @Volatile private var steadying = false
     private var shotFired = false
     private var alignedAt = 0L
+    private var goodSince = 0L // start of the current all-checks-pass run (0 = not passing)
+    private val autoCapture by lazy { intent.getBooleanExtra(EXTRA_AUTO_CAPTURE, true) }
     private var faceSeenAt = 0L
     private val trail = ArrayDeque<Triple<Long, Float, Float>>()
     private var openedAt = 0L
@@ -324,6 +333,8 @@ class CaptureActivity : LsnBaseActivity() {
             text = "Capture — align first"; textSize = 17f; isAllCaps = false; setTextColor(Color.argb(200, 255, 255, 255))
             background = pill(Color.rgb(38, 50, 77)); isEnabled = false
             setOnClickListener { capture() }
+            // auto capture: the screen shoots by itself, the banner says what to fix
+            visibility = if (autoCapture) View.GONE else View.VISIBLE
         }
         dock.addView(captureBtn, LinearLayout.LayoutParams(MATCH_PARENT, dp(56f).toInt()))
         root.addView(dock, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.BOTTOM))
@@ -586,7 +597,7 @@ class CaptureActivity : LsnBaseActivity() {
         val pending = !challenge.done
         val turning = pending && challenge.type == ChallengeType.TURN
         val blinking = pending && challenge.type == ChallengeType.BLINK
-        val problem = liveProblem(faces, luma, shirtLuma, movement, turning, blinking)
+        val problem = liveProblem(faces, luma, shirtLuma, movement, turning, blinking, strict = autoCapture, holding = goodSince > 0L)
         // count the challenge on every single-face frame that is roughly frontal
         // (a blink during a framing flicker still counts)
         if (pending && faces.size == 1 && (turning || (abs(faces[0].yaw) < 18 && abs(faces[0].pitch) < 18))) {
@@ -599,10 +610,18 @@ class CaptureActivity : LsnBaseActivity() {
                 val held = now - alignedAt < HOLD_MS && ready
                 text = if (held) lastText else problem
                 ok = held
+                if (now - alignedAt > AUTO_GRACE_MS) goodSince = 0L
             }
-            !challenge.done -> { text = challenge.instruction; ok = false }
-            else -> { alignedAt = now; text = "Perfect — tap Capture"; ok = true }
+            !challenge.done -> { text = challenge.instruction; ok = false; goodSince = 0L }
+            else -> {
+                alignedAt = now
+                if (goodSince == 0L) goodSince = now
+                text = if (autoCapture) "Perfect — hold still" else "Perfect — tap Capture"
+                ok = true
+            }
         }
+        val autoShoot = autoCapture && problem == null && challenge.done && goodSince > 0L && now - goodSince >= AUTO_HOLD_MS
+        val holdProgress = if (autoCapture && goodSince > 0L) ((now - goodSince).toFloat() / AUTO_HOLD_MS).coerceIn(0f, 1f) else 0f
         val low = luma < Limits.LOW_LIGHT || (shirtLuma != null && shirtLuma < Limits.LOW_LIGHT * 0.6f)
         if (debug && now - lastLog > 1000) {
             lastLog = now
@@ -619,8 +638,10 @@ class CaptureActivity : LsnBaseActivity() {
             ready = ok
             lowLight = low
             setBanner(text, ok)
+            guide.progress = holdProgress
             lightChip.visibility = if (low) View.VISIBLE else View.GONE
             lightChip.text = if (lightOn) "Low light — photo may be dark" else "Low light — tap 💡"
+            if (autoShoot) capture()
         }
     }
 
@@ -805,6 +826,7 @@ class CaptureActivity : LsnBaseActivity() {
 
     private fun failShot() {
         capturing = false
+        goodSince = 0L // auto capture: a fresh hold before the next try, not a retry loop
         setBanner("Capture failed — try again", false)
     }
 
@@ -889,6 +911,10 @@ class CaptureActivity : LsnBaseActivity() {
     private inner class GuideView(ctx: android.content.Context) : View(ctx) {
         var ok = false
             set(v) { if (field != v) { field = v; invalidate() } }
+        // Auto capture: the oval fills clockwise while the rider holds, so the shot never surprises them.
+        var progress = 0f
+            set(v) { if (field != v) { field = v; invalidate() } }
+        private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
 
         override fun onDraw(c: Canvas) {
@@ -901,6 +927,11 @@ class CaptureActivity : LsnBaseActivity() {
             paint.color = if (ok) Color.rgb(60, 207, 149) else Color.argb(220, 255, 255, 255)
             val face = RectF(px + pw * 0.33f, py + ph * 0.10f, px + pw * 0.67f, py + ph * 0.42f)
             c.drawOval(face, paint)
+            if (progress > 0f) {
+                ring.strokeWidth = dp(6f)
+                ring.color = Color.rgb(60, 207, 149)
+                c.drawArc(face, -90f, 360f * progress, false, ring)
+            }
             val top = face.bottom + ph * 0.03f
             val body = Path().apply {
                 moveTo(px + pw * 0.08f, py + ph)

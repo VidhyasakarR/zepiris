@@ -92,6 +92,30 @@ services:
       # help one. Worth re-testing once the process count is settled.
       ML_SERVICE_FACE_PARALLEL_PAIR_EMBED: "false"
 
+      # Go-online checkpoint (face + dress colour + logo). On this box the T4 is
+      # not the limit for it either: SigLIP2 and the face models run on the GPU
+      # in a few ms, but the logo check is PP-OCR (RapidOCR), which is CPU-only.
+      # Measured on the 50 latest go-online selfies (2026-10-12): OCR runs only
+      # when the shirt is blue (16/50), and then costs ~0.5 s of one M2 core,
+      # ~0.75-0.85 s of one of this box's Xeon vCPUs.
+      #
+      # 1 thread per read: RapidOCR's default spreads ONE read over every core,
+      # so three overlapping reads (one per worker) would each fight for all 4
+      # vCPUs. 1 read per worker x 3 workers = 3 vCPUs of OCR at most, which
+      # leaves one for the API and facematch's CPU-side work. Past that a read
+      # waits up to 2s for a slot, then the request gets 503 (retryable), never
+      # a logo FAIL: a busy box is not evidence the rider is out of uniform.
+      #
+      # Expected ceiling with these values: ~3.5-4.5 checkpoint req/s
+      # (~210-270/min) if every rider is in a blue shirt, ~10 req/s (~600/min)
+      # at the measured 1-in-3 blue mix. Shared with facematch traffic, the
+      # two compete for the same 4 vCPUs. If checkpoint volume grows, move it to
+      # its own box or a g4dn.2xlarge (8 vCPU) and raise
+      # DRESSCODE_LOGO_OCR_MAX_CONCURRENCY to 2.
+      ML_SERVICE_DRESSCODE_LOGO_OCR_THREADS: "1"
+      ML_SERVICE_DRESSCODE_LOGO_OCR_MAX_CONCURRENCY: "1"
+      ML_SERVICE_DRESSCODE_LOGO_OCR_QUEUE_TIMEOUT_SECONDS: "2"
+
       # -----------------------------------------------------------------------
       # Throughput tuning (tasks 1-4 in the optimisation pass)
       # -----------------------------------------------------------------------

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from dataclasses import dataclass
 
 import cv2
@@ -128,15 +129,43 @@ class LogoTextResult:
     reason: str | None = None    # "no_loadshare_text" | "not_on_blue" | None
 
 
+class LogoOcrBusyError(RuntimeError):
+    """Every OCR slot stayed taken past the queue timeout.
+
+    Raised instead of a failed logo result: a busy box is not evidence the rider
+    is out of uniform, so the caller must see an error (503) it can retry, never
+    a logo FAIL.
+    """
+
+
 class LoadshareTextDetector:
     """Reads the T-shirt and scores how clearly LOADSHARE is printed on blue fabric."""
 
-    def __init__(self, ocr=None) -> None:
+    def __init__(self, ocr=None, *, threads: int = 1, max_concurrency: int = 0,
+                 queue_timeout: float = 2.0) -> None:
+        """
+        Args:
+            ocr: Prebuilt RapidOCR-compatible callable (tests); built when None.
+            threads: ONNX Runtime threads per OCR call. RapidOCR's default (-1)
+                uses every core for ONE read, so a few concurrent reads across
+                worker processes oversubscribe the CPU and all slow down
+                together. 1 makes an in-flight read cost exactly one core.
+            max_concurrency: OCR reads allowed at once in this process; 0 means
+                unbounded. OCR is the only CPU-heavy step of the go-online check
+                (~0.5-0.8 s of one core on a uniformed rider; the face and
+                SigLIP2 models run on the GPU), so on a small-core GPU host it
+                must be capped or it starves facematch traffic of CPU.
+            queue_timeout: Seconds to wait for an OCR slot before raising
+                :class:`LogoOcrBusyError`.
+        """
         if ocr is None:
             from rapidocr_onnxruntime import RapidOCR
 
-            ocr = RapidOCR()
+            # Global keys are copied onto the det/cls/rec sessions by RapidOCR.
+            ocr = RapidOCR(intra_op_num_threads=threads, inter_op_num_threads=1)
         self._ocr = ocr
+        self._slots = threading.BoundedSemaphore(max_concurrency) if max_concurrency > 0 else None
+        self._queue_timeout = queue_timeout
 
     # -- region ----------------------------------------------------------------
     @staticmethod
@@ -221,6 +250,19 @@ class LoadshareTextDetector:
             region = cv2.resize(region, None, fx=k, fy=k, interpolation=cv2.INTER_AREA)
         if self.blue_share(region) < MIN_REGION_BLUE:
             return LogoTextResult(score=0.0, on_blue=0.0, reason="not_on_blue")
+        # Only reads that actually run OCR take a slot; the blue pre-check above
+        # stays free, so non-uniform photos never queue behind uniformed ones.
+        if self._slots is None:
+            return self._read_all(region, edges)
+        if not self._slots.acquire(timeout=self._queue_timeout):
+            raise LogoOcrBusyError(f"no OCR slot free within {self._queue_timeout}s")
+        try:
+            return self._read_all(region, edges)
+        finally:
+            self._slots.release()
+
+    def _read_all(self, region: np.ndarray, edges: dict) -> LogoTextResult:
+        """Read the region as is, then mirrored and upside down until LOADSHARE matches."""
         best, _ = self._read(region, edges)
         mirrored = {**edges, "left": edges["right"], "right": edges["left"]}
         rotated = {"top": edges["bottom"], "bottom": edges["top"], "left": edges["right"], "right": edges["left"]}

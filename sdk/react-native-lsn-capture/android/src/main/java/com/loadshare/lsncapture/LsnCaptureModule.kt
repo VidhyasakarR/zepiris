@@ -151,6 +151,7 @@ class LsnCaptureModule(private val reactContext: ReactApplicationContext) :
         val jpegQuality = opts.finite("jpegQuality")?.toInt() ?: 92
         val brightness = (opts.finite("brightness") ?: 0.0).coerceIn(-2.0, 2.0).toFloat()
         val light = opts.bool("light") ?: false
+        val autoCapture = opts.bool("autoCapture") ?: true
         val id = synchronized(lock) {
             if (pending != null) return promise.reject("busy", "a capture is already running")
             pending = promise
@@ -170,7 +171,8 @@ class LsnCaptureModule(private val reactContext: ReactApplicationContext) :
                         .putExtra(CaptureActivity.EXTRA_LIGHT, light)
                         .putExtra(CaptureActivity.EXTRA_MAX_SIDE, maxSide)
                         .putExtra(CaptureActivity.EXTRA_JPEG_QUALITY, jpegQuality)
-                        .putExtra(CaptureActivity.EXTRA_BRIGHTNESS, brightness),
+                        .putExtra(CaptureActivity.EXTRA_BRIGHTNESS, brightness)
+                        .putExtra(CaptureActivity.EXTRA_AUTO_CAPTURE, autoCapture),
                     REQUEST,
                 )
             } catch (e: Exception) { // never leave the module stuck on "busy"
