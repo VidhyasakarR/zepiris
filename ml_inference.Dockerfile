@@ -48,11 +48,18 @@ RUN apt-get update \
 #
 # The CPU wheel has no CUDAExecutionProvider, so a GPU instance built without
 # this silently runs inference on the host cores. See docs/CPU_VS_GPU.md §5.2.
+#
+# cuDNN is pinned because the [cudnn] extra only asks for ~=9.0: an unpinned
+# rebuild on 2026-10-12 pulled 9.27, and ORT 1.23's cuDNN-frontend conv path
+# failed every Conv with HEURISTIC_QUERY_FAILED (every request 503). Move this
+# pin only together with ONNXRUNTIME_GPU_VERSION, after a GPU load test.
 ARG ONNXRUNTIME_GPU_VERSION=""
+ARG CUDNN_VERSION="9.8.0.87"
 RUN if [ -n "$ONNXRUNTIME_GPU_VERSION" ]; then \
         pip uninstall -y onnxruntime \
         && pip install --no-cache-dir \
             "onnxruntime-gpu[cuda,cudnn]==${ONNXRUNTIME_GPU_VERSION}" \
+            "nvidia-cudnn-cu12==${CUDNN_VERSION}" \
         && find /usr/local/lib/python3.12/site-packages/nvidia -type d -name lib \
             > /etc/ld.so.conf.d/nvidia-pip-wheels.conf \
         && ldconfig; \

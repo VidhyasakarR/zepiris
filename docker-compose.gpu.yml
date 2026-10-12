@@ -17,6 +17,8 @@ services:
         # and Deep Learning AMIs ship. The [cuda,cudnn] extras bring the CUDA
         # libraries as pip wheels, so no CUDA toolkit is needed in the image.
         ONNXRUNTIME_GPU_VERSION: "1.23.2"
+        # Pinned with ORT: an unpinned rebuild pulled cuDNN 9.27 and every Conv failed.
+        CUDNN_VERSION: "9.8.0.87"
     # Multiple worker processes, because one is not enough — and on GPU the
     # reason is the host, not the card.
     #
