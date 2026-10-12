@@ -189,3 +189,20 @@ def test_without_classifier_engine_is_hsv():
     result = _service([0.4, 0.1, 0.6, 0.3]).check(_swatch(113, 241, 169))
     assert result.engine == "hsv"
     assert result.uniform_score is None
+
+
+class _BusyLogoReader:
+    def detect(self, image_rgb, face_bbox):
+        from zepiris.ml_inference.logo_text import LogoOcrBusyError
+
+        raise LogoOcrBusyError("no OCR slot")
+
+
+def test_busy_logo_reader_propagates_instead_of_failing_closed():
+    # A busy box is not evidence the rider is out of uniform: it must not turn
+    # into a logo score of 0 the way a real OCR error does.
+    from zepiris.ml_inference.logo_text import LogoOcrBusyError
+
+    service = _service([0.4, 0.1, 0.6, 0.3], classifier=_FakeClassifier(0.9), logo_reader=_BusyLogoReader())
+    with pytest.raises(LogoOcrBusyError):
+        service.check(_swatch(113, 241, 169))

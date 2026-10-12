@@ -23,6 +23,7 @@ from zepiris.ml_inference.deps import (
     SpoofDep,
 )
 from zepiris.ml_inference.embedding_cache import reference_digest
+from zepiris.ml_inference.logo_text import LogoOcrBusyError
 from zepiris.schemas.ml_inference import (
     BlurDetectionResult,
     CaptureQualityResult,
@@ -398,7 +399,10 @@ async def dresscode_check(request: Request, payload: ImagePayload, service: Dres
     """
     # decode in the worker thread too: a big JPEG must not stall the event loop
     async with request.app.state.inference_limiter.slot():
-        return await run_in_threadpool(lambda: service.check(_decode_base64_image(payload.image_b64)))
+        try:
+            return await run_in_threadpool(lambda: service.check(_decode_base64_image(payload.image_b64)))
+        except LogoOcrBusyError as exc:
+            raise HTTPException(status_code=503, detail={"message": "logo_ocr_busy", "error": str(exc)}) from exc
 
 
 @router.post("/v1/quality/check", response_model=CaptureQualityResult)

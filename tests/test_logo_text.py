@@ -5,7 +5,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from zepiris.ml_inference.logo_text import MIN_SIMILARITY, LoadshareTextDetector, similarity
+from zepiris.ml_inference.logo_text import (
+    MIN_SIMILARITY,
+    LoadshareTextDetector,
+    LogoOcrBusyError,
+    similarity,
+)
 
 BLUE_RGB = (30, 60, 220)     # Loadshare blue: OpenCV hue ~115
 BLACK_RGB = (20, 20, 20)
@@ -143,3 +148,28 @@ def test_missing_ocr_fails_closed() -> None:
 
     r = UnavailableLogoReader().detect(np.zeros((10, 10, 3), np.uint8), None)
     assert r.score == 0 and r.reason == "ocr_unavailable"
+
+
+def test_busy_ocr_slot_raises_instead_of_failing_the_logo() -> None:
+    d = LoadshareTextDetector(ocr=_FakeOCR([(BOX, "LOADSHARE", 0.97)]), max_concurrency=1, queue_timeout=0.01)
+    d._slots.acquire()  # another read holds the only slot
+    with pytest.raises(LogoOcrBusyError):
+        d.detect(_shirt(), None)
+    d._slots.release()
+    assert d.detect(_shirt(), None).score >= MIN_SIMILARITY  # slot free again: reads normally
+
+
+def test_non_blue_photo_never_waits_for_an_ocr_slot() -> None:
+    d = LoadshareTextDetector(ocr=_FakeOCR(), max_concurrency=1, queue_timeout=0.01)
+    d._slots.acquire()
+    assert d.detect(_shirt(BLACK_RGB), None).reason == "not_on_blue"
+
+
+def test_slot_is_released_when_ocr_raises() -> None:
+    def broken(_img):
+        raise RuntimeError("onnx failed")
+
+    d = LoadshareTextDetector(ocr=broken, max_concurrency=1, queue_timeout=0.01)
+    with pytest.raises(RuntimeError):
+        d.detect(_shirt(), None)
+    assert d._slots.acquire(timeout=0)

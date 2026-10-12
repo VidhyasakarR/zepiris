@@ -140,6 +140,14 @@ class MLServiceSettings(BaseSettings):
     # Logo check by OCR: LOADSHARE letters (partial runs ok) read on blue fabric.
     # Replaces the learned logo head, which passed any chest print.
     dresscode_logo_ocr_enabled: bool = True
+    # ONNX Runtime threads per OCR read (RapidOCR's own default uses every core
+    # for one read, which thrashes once several reads overlap).
+    dresscode_logo_ocr_threads: int = 1
+    # OCR reads in flight per worker process; 0 = unbounded. Size so that
+    # workers x this stays below the vCPU count (see docker-compose.gpu.yml).
+    dresscode_logo_ocr_max_concurrency: int = 0
+    # Wait for an OCR slot this long, then answer 503 (never a logo FAIL).
+    dresscode_logo_ocr_queue_timeout_seconds: float = 2.0
     dresscode_encoder_path: str = "/app/models/siglip2_base_vision.onnx"
     dresscode_head_path: str = ""
 
@@ -427,7 +435,11 @@ async def lifespan(app: FastAPI):
             try:
                 from zepiris.ml_inference.logo_text import LoadshareTextDetector
 
-                logo_reader = LoadshareTextDetector()
+                logo_reader = LoadshareTextDetector(
+                    threads=s.dresscode_logo_ocr_threads,
+                    max_concurrency=s.dresscode_logo_ocr_max_concurrency,
+                    queue_timeout=s.dresscode_logo_ocr_queue_timeout_seconds,
+                )
                 logger.info("Dress code: logo decided by OCR (LOADSHARE on blue)")
             except Exception:
                 # Fail closed: the learned logo head passes any chest print (a
