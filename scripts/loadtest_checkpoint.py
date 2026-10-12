@@ -88,20 +88,43 @@ def summarise(level, results, wall_s):
     }
 
 
+def _bodies_from_events(path: str) -> list[bytes]:
+    """Request bodies from a prod_replay recording: both images as S3 URLs.
+
+    This is the shape production traffic has (titan sends S3 keys, not bytes), so
+    the API's S3 fetch is part of the measured latency, as it is for riders.
+    """
+    bodies = []
+    for line in Path(path).read_text().splitlines():
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        probe, reference = rec.get("go_online_url"), rec.get("enrolled_url")
+        if probe and reference:
+            bodies.append(json.dumps({"face_check_s3": probe, "source_selfie_s3": reference}).encode())
+    if not bodies:
+        raise SystemExit(f"no events with both go_online_url and enrolled_url in {path}")
+    return bodies
+
+
 async def main(args):
-    reference = base64.b64encode(Path(args.reference).read_bytes()).decode()
-    selfies = sorted(p for p in Path(args.images_dir).glob("*.jpg") if p.name != Path(args.reference).name)
-    # Pre-encode every body once, so the client's own JSON/base64 work is not
-    # part of the measured latency.
-    bodies = [json.dumps({"face_check_b64": base64.b64encode(p.read_bytes()).decode(),
-                          "source_selfie_b64": reference}).encode() for p in selfies]
+    if args.events:
+        bodies = _bodies_from_events(args.events)
+    else:
+        reference = base64.b64encode(Path(args.reference).read_bytes()).decode()
+        selfies = sorted(p for p in Path(args.images_dir).glob("*.jpg") if p.name != Path(args.reference).name)
+        # Pre-encode every body once, so the client's own JSON/base64 work is not
+        # part of the measured latency.
+        bodies = [json.dumps({"face_check_b64": base64.b64encode(p.read_bytes()).decode(),
+                              "source_selfie_b64": reference}).encode() for p in selfies]
     url = args.base_url.rstrip("/") + "/v1/checkpoint/verify"
     levels = [int(x) for x in args.levels.split(",")]
     summaries = []
     limits = httpx.Limits(max_connections=max(levels) + 4, max_keepalive_connections=max(levels) + 4)
     async with httpx.AsyncClient(timeout=args.timeout, limits=limits) as client:
         await run_level(client, url, bodies, 1, 3)  # warm-up, not reported
-        print(f"{len(bodies)} distinct selfies -> {url}")
+        print(f"{len(bodies)} distinct requests -> {url}")
         print(f"{'conc':>4} {'ok':>4} {'err%':>5} {'img/s':>6} {'img/min':>7} {'min':>6} {'avg':>6} "
               f"{'p50':>6} {'p90':>6} {'p95':>6} {'p99':>6} {'max':>6}")
         for level in levels:
@@ -122,11 +145,15 @@ async def main(args):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--base-url", required=True)
-    ap.add_argument("--images-dir", required=True)
-    ap.add_argument("--reference", required=True)
+    ap.add_argument("--images-dir", help="selfies as local .jpg files (sent base64)")
+    ap.add_argument("--reference", help="enrolled photo for --images-dir")
+    ap.add_argument("--events", help="prod_replay .jsonl: send S3 URLs instead of image bytes")
     ap.add_argument("--levels", default="1,2,4,8,16")
     ap.add_argument("--requests-per-level", type=int, default=50)
     ap.add_argument("--timeout", type=float, default=60.0)
     ap.add_argument("--stop-error-rate", type=float, default=0.2)
     ap.add_argument("--json")
-    asyncio.run(main(ap.parse_args()))
+    parsed = ap.parse_args()
+    if not parsed.events and not (parsed.images_dir and parsed.reference):
+        ap.error("pass --events, or both --images-dir and --reference")
+    asyncio.run(main(parsed))
