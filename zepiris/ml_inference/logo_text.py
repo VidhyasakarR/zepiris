@@ -138,11 +138,39 @@ class LogoOcrBusyError(RuntimeError):
     """
 
 
+def _use_heuristic_conv_search() -> None:
+    """Make RapidOCR's CUDA sessions pick conv algorithms by heuristic, not benchmark.
+
+    RapidOCR hardcodes cudnn_conv_algo_search=EXHAUSTIVE, which benchmarks every
+    conv algorithm the first time a session sees an input shape. OCR shapes vary
+    with every shirt crop and text line, so that would put a several-hundred-ms
+    stall on a large share of requests for as long as new shapes keep arriving —
+    the opposite of what moving OCR to the GPU is for. HEURISTIC costs a little
+    peak throughput per conv and has no per-shape stall. Patched at the one place
+    the options are built; rapidocr_onnxruntime is pinned in the Dockerfile.
+    """
+    from rapidocr_onnxruntime.utils.infer_engine import OrtInferSession
+
+    if getattr(OrtInferSession, "_zepiris_heuristic", False):
+        return
+    original = OrtInferSession._get_ep_list
+
+    def _get_ep_list(self):
+        providers = original(self)
+        for name, options in providers:
+            if name == "CUDAExecutionProvider":
+                options["cudnn_conv_algo_search"] = "HEURISTIC"
+        return providers
+
+    OrtInferSession._get_ep_list = _get_ep_list
+    OrtInferSession._zepiris_heuristic = True
+
+
 class LoadshareTextDetector:
     """Reads the T-shirt and scores how clearly LOADSHARE is printed on blue fabric."""
 
     def __init__(self, ocr=None, *, threads: int = 1, max_concurrency: int = 0,
-                 queue_timeout: float = 2.0) -> None:
+                 queue_timeout: float = 2.0, use_cuda: bool = False) -> None:
         """
         Args:
             ocr: Prebuilt RapidOCR-compatible callable (tests); built when None.
@@ -157,12 +185,20 @@ class LoadshareTextDetector:
                 must be capped or it starves facematch traffic of CPU.
             queue_timeout: Seconds to wait for an OCR slot before raising
                 :class:`LogoOcrBusyError`.
+            use_cuda: Run det/cls/rec on the GPU. On a GPU host this is the
+                difference between ~0.8 s of CPU per read and tens of ms, and it
+                frees the vCPUs that OCR was starving. RapidOCR falls back to CPU
+                by itself when CUDA is not available.
         """
         if ocr is None:
             from rapidocr_onnxruntime import RapidOCR
 
+            if use_cuda:
+                _use_heuristic_conv_search()
             # Global keys are copied onto the det/cls/rec sessions by RapidOCR.
-            ocr = RapidOCR(intra_op_num_threads=threads, inter_op_num_threads=1)
+            ocr = RapidOCR(intra_op_num_threads=threads, inter_op_num_threads=1,
+                           det_use_cuda=use_cuda, cls_use_cuda=use_cuda, rec_use_cuda=use_cuda)
+            logger.info("Logo OCR on %s", "GPU (if available)" if use_cuda else "CPU")
         self._ocr = ocr
         self._slots = threading.BoundedSemaphore(max_concurrency) if max_concurrency > 0 else None
         self._queue_timeout = queue_timeout

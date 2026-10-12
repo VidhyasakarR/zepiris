@@ -148,6 +148,9 @@ class MLServiceSettings(BaseSettings):
     dresscode_logo_ocr_max_concurrency: int = 0
     # Wait for an OCR slot this long, then answer 503 (never a logo FAIL).
     dresscode_logo_ocr_queue_timeout_seconds: float = 2.0
+    # Run logo OCR on the GPU (det/cls/rec). Off by default: on a CPU box it is a
+    # no-op, and on GPU it should be turned on together with load testing.
+    dresscode_logo_ocr_use_cuda: bool = False
     dresscode_encoder_path: str = "/app/models/siglip2_base_vision.onnx"
     dresscode_head_path: str = ""
 
@@ -439,6 +442,7 @@ async def lifespan(app: FastAPI):
                     threads=s.dresscode_logo_ocr_threads,
                     max_concurrency=s.dresscode_logo_ocr_max_concurrency,
                     queue_timeout=s.dresscode_logo_ocr_queue_timeout_seconds,
+                    use_cuda=s.dresscode_logo_ocr_use_cuda and device != "cpu",
                 )
                 logger.info("Dress code: logo decided by OCR (LOADSHARE on blue)")
             except Exception:

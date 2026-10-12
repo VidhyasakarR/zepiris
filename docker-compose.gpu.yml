@@ -114,8 +114,15 @@ services:
       # two compete for the same 4 vCPUs. If checkpoint volume grows, move it to
       # its own box or a g4dn.2xlarge (8 vCPU) and raise
       # DRESSCODE_LOGO_OCR_MAX_CONCURRENCY to 2.
+      #
+      # 2026-10-13: OCR moved to the T4 for the <300 ms target. A CPU read
+      # (~0.8 s) alone breaks that budget for every blue-shirt rider, at any
+      # load. On GPU a read is mostly kernel time, so 2 per worker (6 per box)
+      # no longer means 6 busy vCPUs; the semaphore stays as a queue bound.
+      # Rollback: set USE_CUDA "false" and MAX_CONCURRENCY back to "1".
+      ML_SERVICE_DRESSCODE_LOGO_OCR_USE_CUDA: "true"
       ML_SERVICE_DRESSCODE_LOGO_OCR_THREADS: "1"
-      ML_SERVICE_DRESSCODE_LOGO_OCR_MAX_CONCURRENCY: "1"
+      ML_SERVICE_DRESSCODE_LOGO_OCR_MAX_CONCURRENCY: "2"
       ML_SERVICE_DRESSCODE_LOGO_OCR_QUEUE_TIMEOUT_SECONDS: "2"
 
       # -----------------------------------------------------------------------
