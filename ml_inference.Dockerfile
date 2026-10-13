@@ -36,6 +36,16 @@ RUN pip install --no-cache-dir "poetry==${POETRY_VERSION}" \
     && pip install --no-cache-dir . \
     && pip uninstall -y poetry
 
+# Logo check OCR runs HERE, in the ML service (logo_text.py), not in the API.
+# It used to be installed only in the API image, so every ML build since the
+# logo-OCR rule landed logged "Logo OCR unavailable" and failed every logo check
+# with reason ocr_unavailable. Same pins as the API Dockerfile. --no-deps: it
+# would pull GUI opencv-python (clashes with headless cv2) and the CPU
+# onnxruntime (the GPU block below must stay the only ORT). Before the g++ purge
+# in case pyclipper/shapely need to build.
+RUN pip install --no-cache-dir --no-deps "rapidocr_onnxruntime==1.4.4" \
+    && pip install --no-cache-dir "pyclipper==1.4.0" "shapely==2.1.2" "PyYAML>=6" "six>=1.16" "tqdm>=4.66"
+
 RUN apt-get update \
     && apt-get purge -y g++ \
     && apt-get autoremove -y \
