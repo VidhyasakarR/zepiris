@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     # default: that endpoint is called from rider devices, and a client-chosen
     # threshold of -1 would clear anyone. Turn on only for trusted testing.
     allow_threshold_override: bool = False
+    # Checkpoint calls asking for face match AND a dress check send the selfie
+    # to the ML service once (/v1/checkpoint/check) instead of twice: one hop,
+    # one decode, one inference slot. Results are the same either way; off falls
+    # back to the two concurrent calls, as a rollback without a code deploy.
+    # Only applies with match_mode="remote".
+    checkpoint_single_call: bool = True
     # Image URLs (face_check_s3 / source_selfie_s3 / image_s3) come from rider
     # devices: refuse ones that point into the private network (the ML service,
     # cloud metadata at 169.254.169.254, ...). Comma list of allowed hosts, exact

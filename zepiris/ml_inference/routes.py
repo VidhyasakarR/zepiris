@@ -14,6 +14,8 @@ from starlette.concurrency import run_in_threadpool
 
 from zepiris.framing import FrameError, decode_pair_frame
 from zepiris.ml_inference.deps import (
+    _dresscode,
+    _face_embedding,
     BlurDep,
     DresscodeDep,
     FaceEmbeddingDep,
@@ -25,8 +27,10 @@ from zepiris.ml_inference.deps import (
 from zepiris.ml_inference.embedding_cache import reference_digest
 from zepiris.ml_inference.logo_text import LogoOcrBusyError
 from zepiris.schemas.ml_inference import (
+    CHECKPOINT_FAILED_CHECK_HEADER,
     BlurDetectionResult,
     CaptureQualityResult,
+    CheckpointCheckResult,
     DresscodeCheckResult,
     FaceDetectionResult,
     FaceEmbeddingResult,
@@ -92,6 +96,16 @@ def _decode_base64_image(image_b64: str) -> np.ndarray:
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"invalid_base64: {str(e)}") from e
 
+    return _decode_upload_bytes(image_bytes)
+
+
+def _decode_upload_bytes(image_bytes: bytes) -> np.ndarray:
+    """Decode already-unwrapped image bytes with :func:`_decode_base64_image`'s semantics.
+
+    Split out so ``/v1/checkpoint/check`` can take the dress-code image as raw
+    bytes yet fail with exactly the statuses and messages ``/v1/dresscode/check``
+    gives for the same image.
+    """
     if not image_bytes:
         raise HTTPException(status_code=400, detail="empty_image_data")
     _check_pixel_budget(image_bytes)
@@ -295,9 +309,23 @@ def _match_sync(
     ``jpeg_reduction`` is forwarded to :func:`_decode_image_bytes` to enable
     libjpeg's native subsampled decode — see that function's docstring.
     """
+    probe_rgb = _decode_image_bytes(probe_raw, field="probe", reduction=jpeg_reduction)
+    return _match_decoded(
+        service, probe_rgb, reference_raw, want_probe_sharpness, parallel, jpeg_reduction
+    )
+
+
+def _match_decoded(
+    service,
+    probe_rgb: np.ndarray,
+    reference_raw: bytes,
+    want_probe_sharpness: bool,
+    parallel: bool,
+    jpeg_reduction: int,
+) -> FaceMatchResult:
+    """:func:`_match_sync` for a probe the caller has already decoded."""
     cache = getattr(service, "reference_cache", None)
     reference_key = reference_digest(reference_raw) if cache is not None and cache.enabled else None
-    probe_rgb = _decode_image_bytes(probe_raw, field="probe", reduction=jpeg_reduction)
     return service.match_pair(
         probe_rgb,
         lambda: _decode_image_bytes(
@@ -403,6 +431,95 @@ async def dresscode_check(request: Request, payload: ImagePayload, service: Dres
             return await run_in_threadpool(lambda: service.check(_decode_base64_image(payload.image_b64)))
         except LogoOcrBusyError as exc:
             raise HTTPException(status_code=503, detail={"message": "logo_ocr_busy", "error": str(exc)}) from exc
+
+
+@router.post("/v1/checkpoint/check", response_model=CheckpointCheckResult)
+async def checkpoint_check(request: Request) -> CheckpointCheckResult:
+    """Face match and dress code on one selfie — ``/v1/face/match`` plus
+    ``/v1/dresscode/check`` in a single call.
+
+    The checkpoint asks both questions of the same probe. As two calls it paid
+    twice for everything but the models: two HTTP hops, the probe base64-encoded
+    for the dress half, two decodes of the same JPEG and two limiter slots. Here
+    the body is the ``/v1/face/match`` frame, the probe is decoded once and one
+    slot covers both. The two face detections are deliberately NOT shared: the
+    match and the dress code each run their own detector settings, and merging
+    them would change scores.
+
+    A failure is reported with the status and detail the replaced endpoint would
+    have given. Failures inside the face match carry the
+    ``X-Zepiris-Failed-Check: face_match`` header so the API can map them as a
+    match error; everything else maps as a dress-code error.
+    """
+    # Services are resolved here rather than as dependencies so a missing face
+    # model can be tagged as a face-match failure, as /v1/face/match reports it.
+    try:
+        face_service = _face_embedding(request)
+    except HTTPException as exc:
+        raise _tag_face_match(exc) from exc
+    dress_service = _dresscode(request)
+
+    try:
+        probe_raw, reference_raw = decode_pair_frame(await request.body())
+    except FrameError as exc:
+        raise HTTPException(status_code=400, detail=f"malformed_frame: {exc}") from exc
+
+    limiter = request.app.state.inference_limiter
+    async with limiter.slot():
+        parallel = _may_embed_in_parallel(request.app.state, limiter)
+        jpeg_reduction = getattr(request.app.state, "jpeg_decode_reduction", 0)
+        try:
+            return await run_in_threadpool(
+                _checkpoint_sync,
+                face_service,
+                dress_service,
+                probe_raw,
+                reference_raw,
+                parallel,
+                jpeg_reduction,
+            )
+        except LogoOcrBusyError as exc:
+            raise HTTPException(status_code=503, detail={"message": "logo_ocr_busy", "error": str(exc)}) from exc
+
+
+def _tag_face_match(exc: HTTPException) -> HTTPException:
+    headers = dict(exc.headers or {})
+    headers[CHECKPOINT_FAILED_CHECK_HEADER] = "face_match"
+    return HTTPException(status_code=exc.status_code, detail=exc.detail, headers=headers)
+
+
+def _checkpoint_sync(
+    face_service,
+    dress_service,
+    probe_raw: bytes,
+    reference_raw: bytes,
+    parallel: bool,
+    jpeg_reduction: int,
+) -> CheckpointCheckResult:
+    """Decode the probe once, then run the match and the dress check on it.
+
+    The dress check gets the probe decoded exactly as ``/v1/dresscode/check``
+    decodes it (full resolution), so an unreadable probe fails here with that
+    endpoint's error — which is what the checkpoint returned before, since the
+    match reports an unreadable probe in its body rather than failing.
+
+    Both decoders run the same ``cv2.imdecode(IMREAD_COLOR)`` + BGR->RGB, so at
+    ``jpeg_reduction=0`` the match decode would produce an identical array and
+    the dress array is reused. With a reduction the match keeps its own
+    subsampled decode, exactly as ``/v1/face/match`` would.
+    """
+    dress_rgb = _decode_upload_bytes(probe_raw)
+    if jpeg_reduction:
+        probe_rgb = _decode_image_bytes(probe_raw, field="probe", reduction=jpeg_reduction)
+    else:
+        probe_rgb = dress_rgb
+    try:
+        match = _match_decoded(
+            face_service, probe_rgb, reference_raw, False, parallel, jpeg_reduction
+        )
+    except HTTPException as exc:
+        raise _tag_face_match(exc) from exc
+    return CheckpointCheckResult(match=match, dresscode=dress_service.check(dress_rgb))
 
 
 @router.post("/v1/quality/check", response_model=CaptureQualityResult)

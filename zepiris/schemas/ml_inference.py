@@ -174,6 +174,25 @@ class DresscodeCheckResult(BaseModel):
     reason: str | None = None
 
 
+#: Response header on a failed ``/v1/checkpoint/check`` naming the check that
+#: failed ("face_match"). The combined call folds two endpoints into one, and the
+#: API must still map each failure the way the endpoint it replaced would have:
+#: a face-match failure as a match error, anything else as a dress-code error.
+CHECKPOINT_FAILED_CHECK_HEADER = "X-Zepiris-Failed-Check"
+
+
+class CheckpointCheckResult(BaseModel):
+    """Face match and dress code on one selfie, from one ML-service call.
+
+    Each half is exactly what ``/v1/face/match`` and ``/v1/dresscode/check``
+    return for the same images; only the decode, the transfer and the
+    inference-limiter slot are shared.
+    """
+
+    match: FaceMatchResult
+    dresscode: DresscodeCheckResult
+
+
 class CaptureQualityResult(BaseModel):
     """Is the face — and the T-shirt — clearly visible in a captured selfie?
 

@@ -56,6 +56,18 @@ async def dresscode_match(
 HSV_RULE_THRESHOLD = 0.55
 
 
+def dresscode_upstream_error(exc: httpx.HTTPStatusError) -> HTTPException:
+    """The API error for an ML-service error status on a dress-code check.
+
+    Shared with the checkpoint's single-call path, which must fail exactly as
+    this route's two-call predecessor did.
+    """
+    return HTTPException(
+        status_code=exc.response.status_code,
+        detail={"message": "dresscode_upstream_error", "upstream": exc.response.text[:500]},
+    )
+
+
 async def score_dresscode(
     ml, raw: bytes, *, request_id: str, threshold: float | None
 ) -> DresscodeMatchResponse:
@@ -68,10 +80,7 @@ async def score_dresscode(
     try:
         result = await ml.check_dresscode(raw)
     except httpx.HTTPStatusError as exc:
-        raise HTTPException(
-            status_code=exc.response.status_code,
-            detail={"message": "dresscode_upstream_error", "upstream": exc.response.text[:500]},
-        ) from exc
+        raise dresscode_upstream_error(exc) from exc
     except httpx.HTTPError as exc:
         raise HTTPException(
             status_code=503,

@@ -9,7 +9,9 @@ run, and ``isCleared`` is true only when every requested check passes.
   ONE dress-code inference, so asking for both costs no more than asking for one.
 
 Face match and dress code run concurrently when both are requested, so the call
-costs the slower of the two rather than their sum. A check that is not requested
+costs the slower of the two rather than their sum. With
+``ZEPIRIS_CHECKPOINT_SINGLE_CALL`` (on by default) both are answered by one ML
+call, so the selfie crosses the wire and is decoded once rather than twice. A check that is not requested
 is not run at all (no source needed for dress-only; no dress-code inference for
 face-only).
 
@@ -29,17 +31,72 @@ import hashlib
 import uuid
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 
 from zepiris.api.image_source import resolve_image_source
-from zepiris.api.routes.dresscode import score_dresscode
+from zepiris.api.routes.dresscode import dresscode_upstream_error, score_dresscode
 from zepiris.api.routes.face import facematch_from_bytes, resolve_facematch_sources
 from zepiris.deps import LearnerDep, MatcherDep, S3FetcherDep, SettingsDep
+from zepiris.exceptions import MLInferenceTimeoutError, MLInferenceTransportError
 from zepiris.schemas.checkpoint import CheckpointRequest
+from zepiris.schemas.ml_inference import (
+    CHECKPOINT_FAILED_CHECK_HEADER,
+    CheckpointCheckResult,
+    DresscodeCheckResult,
+    FaceMatchResult,
+)
+from zepiris.services.matching import FaceMatcher, RemoteFaceMatcher
 
 router = APIRouter()
 
 _DRESS_CHECKS = ("dress_color", "logo")
+
+
+async def _check_checkpoint(ml, probe_raw: bytes, reference_raw: bytes) -> CheckpointCheckResult:
+    """One ML call for both answers, failing as the call that failed would have.
+
+    A face-match failure is translated exactly as ``RemoteFaceMatcher`` does;
+    any other error status exactly as ``score_dresscode`` does. Timeouts and
+    transport errors take the matcher's mapping (both calls would have hit them).
+    """
+    try:
+        return await ml.check_checkpoint(probe_raw, reference_raw)
+    except httpx.HTTPStatusError as e:
+        if e.response.headers.get(CHECKPOINT_FAILED_CHECK_HEADER) == "face_match":
+            RemoteFaceMatcher._raise_for_status(e)
+        raise dresscode_upstream_error(e) from e
+    except httpx.TimeoutException as e:
+        raise MLInferenceTimeoutError() from e
+    except httpx.HTTPError as e:
+        raise MLInferenceTransportError(str(e)) from e
+
+
+class _CombinedMatcher(FaceMatcher):
+    """Hands the face half of the combined call to the unchanged facematch flow.
+
+    Swapping the matcher, rather than reworking ``facematch_from_bytes``, keeps
+    the liveness gate, threshold, learning log and response shaping on the one
+    code path both routes share.
+    """
+
+    def __init__(self, pending: asyncio.Future) -> None:
+        self._pending = pending
+
+    async def match(
+        self, probe_raw: bytes, reference_raw: bytes, *, want_probe_sharpness: bool = False
+    ) -> FaceMatchResult:
+        return (await self._pending).match
+
+
+class _CombinedDresscode:
+    """Hands the dress half of the combined call to the unchanged ``score_dresscode``."""
+
+    def __init__(self, pending: asyncio.Future) -> None:
+        self._pending = pending
+
+    async def check_dresscode(self, image: bytes) -> DresscodeCheckResult:
+        return (await self._pending).dresscode
 
 
 async def _infer(request, req: CheckpointRequest, settings, matcher, fetcher, learner, request_id: str) -> dict:
@@ -56,6 +113,23 @@ async def _infer(request, req: CheckpointRequest, settings, matcher, fetcher, le
         )
         reference_raw = None
 
+    dress_ml = request.app.state.ml_async
+    combined = None
+    # The combined call replaces the remote matcher's call, so it applies only
+    # when the match would have gone to the ML service in the first place.
+    if (
+        want_face
+        and want_dress
+        and getattr(settings, "checkpoint_single_call", True)
+        and isinstance(matcher, RemoteFaceMatcher)
+    ):
+        # Started once and awaited by both halves; each half sees the same
+        # result or the same already-mapped error, so whichever surfaces first
+        # the response is the same.
+        combined = asyncio.ensure_future(_check_checkpoint(dress_ml, probe_raw, reference_raw))
+        matcher = _CombinedMatcher(combined)
+        dress_ml = _CombinedDresscode(combined)
+
     tasks = {}
     if want_face:
         tasks["face"] = facematch_from_bytes(
@@ -70,12 +144,17 @@ async def _infer(request, req: CheckpointRequest, settings, matcher, fetcher, le
         )
     if want_dress:
         tasks["dress"] = score_dresscode(
-            request.app.state.ml_async,
+            dress_ml,
             probe_raw,
             request_id=request_id,
             threshold=settings.dresscode_threshold,
         )
-    done = dict(zip(tasks, await asyncio.gather(*tasks.values())))
+    try:
+        done = dict(zip(tasks, await asyncio.gather(*tasks.values())))
+    finally:
+        if combined is not None:
+            # A cancelled request must not leave the ML call running unobserved.
+            combined.cancel()
 
     dress = done.get("dress")
     if dress is not None:

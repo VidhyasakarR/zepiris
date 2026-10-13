@@ -30,6 +30,7 @@ from zepiris.framing import encode_pair_frame
 from zepiris.schemas.ml_inference import (
     BlurDetectionResult,
     CaptureQualityResult,
+    CheckpointCheckResult,
     DresscodeCheckResult,
     FaceDetectionResult,
     FaceEmbeddingResult,
@@ -294,6 +295,23 @@ class AsyncMLInferenceClient:
         )
         response.raise_for_status()
         return DresscodeCheckResult(**response.json())
+
+    async def check_checkpoint(self, probe: bytes, reference: bytes) -> CheckpointCheckResult:
+        """Face match and dress code on one selfie, in one call.
+
+        Same framed raw-bytes body as ``match_faces``. Used by the checkpoint
+        when it needs both answers for the same probe: one hop, one decode and
+        one inference slot on the ML service instead of two of each. Errors are
+        left to the caller, as for the other methods; a failure inside the face
+        match is marked by ``CHECKPOINT_FAILED_CHECK_HEADER``.
+        """
+        response = await self.client.post(
+            "/v1/checkpoint/check",
+            content=encode_pair_frame(probe, reference),
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        response.raise_for_status()
+        return CheckpointCheckResult(**response.json())
 
     async def healthz(self) -> dict[str, str]:
         """Check service health."""
