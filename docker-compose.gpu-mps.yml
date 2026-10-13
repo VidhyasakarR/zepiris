@@ -1,0 +1,34 @@
+# NVIDIA MPS overlay — apply on top of the GPU overlay:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.gpu-mps.yml up -d --force-recreate ml-inference
+#
+# Why: the ML service runs 3 worker processes on one T4. Without MPS each
+# process has its own CUDA context and the GPU time-slices between them, so
+# kernels from different workers never overlap. Measured 2026-10-13 on g4dn.xlarge:
+# checkpoint plateaued at ~27 req/s with the GPU reporting 99-100% busy while the
+# models are small (SigLIP2-base, det_500m, PP-OCR) — busy, but mostly with
+# context switches and serialized small kernels. MPS funnels all workers through
+# one shared context so their kernels run concurrently. No model or score change.
+#
+# Requires the MPS control daemon on the HOST (not in the container):
+#   sudo mkdir -p /tmp/nvidia-mps /tmp/nvidia-log && sudo chmod 1777 /tmp/nvidia-mps /tmp/nvidia-log
+#   sudo env CUDA_MPS_PIPE_DIRECTORY=/tmp/nvidia-mps CUDA_MPS_LOG_DIRECTORY=/tmp/nvidia-log nvidia-cuda-mps-control -d
+# The daemon does not survive a reboot; see docs or a systemd unit if this stays.
+#
+# Rollback: recreate without this file (and optionally `echo quit | sudo
+# CUDA_MPS_PIPE_DIRECTORY=/tmp/nvidia-mps nvidia-cuda-mps-control`). If the
+# daemon is down while this overlay is on, CUDA init fails and the service falls
+# back to CPU — check the logs for "CUDAExecutionProvider" after every recreate.
+
+services:
+  ml-inference:
+    # MPS clients talk to the daemon over pipes in CUDA_MPS_PIPE_DIRECTORY and
+    # shared memory, so the container needs the host's IPC namespace.
+    ipc: host
+    environment:
+      # Mounted outside /tmp: the base file makes /tmp a tmpfs in the container.
+      CUDA_MPS_PIPE_DIRECTORY: /mps/pipe
+      CUDA_MPS_LOG_DIRECTORY: /mps/log
+    volumes:
+      - /tmp/nvidia-mps:/mps/pipe
+      - /tmp/nvidia-log:/mps/log
