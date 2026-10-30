@@ -362,17 +362,25 @@ async def facematch_from_bytes(
     settings,
     matcher,
     learner,
+    liveness: SpoofDetectionResult | None = None,
 ) -> dict:
     """Facematch on already-resolved bytes: threshold, liveness gate, match, learning log.
 
     The body of ``/facematch/verify`` after source resolution, factored out so
     the checkpoint route runs the identical face decision alongside dress code.
+    ``liveness`` is a result the caller already has for this probe (the
+    checkpoint's quality gate), reused instead of calling the model again.
     """
     decision_threshold, threshold_source = _resolve_threshold(
         explicit_threshold, learner, FACE_KIND, settings.verify_threshold
     )
     liveness_check = None
-    if settings.liveness_enabled:
+    if liveness is not None:
+        async def _known_liveness() -> SpoofDetectionResult:
+            return liveness
+
+        liveness_check = _known_liveness
+    elif settings.liveness_enabled:
         # Read from app state only when the gate is on, so a deployment with
         # liveness off never touches the liveness client at all.
         ml = request.app.state.ml_async

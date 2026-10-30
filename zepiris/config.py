@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     # back to the two concurrent calls, as a rollback without a code deploy.
     # Only applies with match_mode="remote".
     checkpoint_single_call: bool = True
+    # Quality gate on /v1/checkpoint/verify: before face match and dress code,
+    # grade the selfie (face found / big enough / lit / sharp, T-shirt visible /
+    # sharp) and, with liveness_enabled, run liveness — concurrently. A selfie
+    # that fails is rejected there with rider-facing warnings, and face match and
+    # dress code are not run. Off = the old behaviour, as a rollback.
+    checkpoint_quality_gate: bool = True
     # Image URLs (face_check_s3 / source_selfie_s3 / image_s3) come from rider
     # devices: refuse ones that point into the private network (the ML service,
     # cloud metadata at 169.254.169.254, ...). Comma list of allowed hosts, exact
