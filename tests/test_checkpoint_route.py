@@ -275,6 +275,38 @@ def test_gate_off_skips_quality_and_liveness_calls() -> None:
     assert "quality" not in body["checks"]
 
 
+def test_quality_check_false_skips_quality_but_keeps_liveness() -> None:
+    ml = _ML(issues=["face_blurry"])
+    body = _post(_client(ml, gate=True, liveness=True), quality_check=False).json()
+    assert ml.quality_calls == 0
+    assert "quality" not in body["checks"]
+    assert body["checks"]["liveness"]["passed"] is True
+    assert body["isCleared"] is True
+
+
+def test_quality_check_false_and_no_liveness_skips_the_gate() -> None:
+    ml = _ML(issues=["face_blurry"])
+    body = _post(_client(ml, gate=True), quality_check=False).json()
+    assert ml.quality_calls == 0
+    assert "failedAt" not in body and body["isCleared"] is True
+
+
+def test_unreadable_selfie_with_quality_off_is_still_a_retake() -> None:
+    from zepiris.services.matching import ProbeImageDecodeError
+
+    class _BadImageML(_ML):
+        async def check_liveness(self, image: bytes):
+            raise ProbeImageDecodeError("failed_to_decode_image: probe")
+
+    ml = _BadImageML()
+    r = _post(_client(ml, gate=True, liveness=True), quality_check=False)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["failedAt"] == "quality_gate"
+    assert body["checks"]["quality"]["issues"] == ["image_unreadable"]
+    assert ml.dress_calls == 0
+
+
 def test_unreadable_selfie_is_a_retake_not_an_error() -> None:
     import httpx
 

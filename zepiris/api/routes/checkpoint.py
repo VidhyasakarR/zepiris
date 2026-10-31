@@ -45,6 +45,7 @@ from zepiris.api.image_source import resolve_image_source
 from zepiris.api.routes.dresscode import dresscode_upstream_error, score_dresscode
 from zepiris.api.routes.face import _check_liveness, facematch_from_bytes, resolve_facematch_sources
 from zepiris.api.routes.quality import fetch_capture_quality, quality_warnings
+from zepiris.services.matching import ProbeImageDecodeError
 from zepiris.deps import LearnerDep, MatcherDep, S3FetcherDep, SettingsDep
 from zepiris.exceptions import MLInferenceTimeoutError, MLInferenceTransportError
 from zepiris.schemas.checkpoint import CheckpointRequest
@@ -123,24 +124,30 @@ async def _resolve_sources(req: CheckpointRequest, fetcher) -> tuple[bytes, byte
     return probe_raw, None
 
 
-async def _quality_gate(ml, probe_raw: bytes, requested, *, liveness_enabled: bool) -> dict:
-    """Capture quality and (when enabled) liveness on the probe, concurrently.
+async def _quality_gate(
+    ml, probe_raw: bytes, requested, *, liveness_enabled: bool, quality_enabled: bool = True
+) -> dict:
+    """Capture quality and liveness (each when enabled) on the probe, concurrently.
 
     Returns ``{"checks": {...}, "passed": bool, "liveness": SpoofDetectionResult | None}``.
     Both calls fail closed with the same errors as their standalone routes: a
     gate that could not run must not let the selfie through.
     """
     want_dress = any(c in requested for c in _DRESS_CHECKS)
-    calls = [fetch_capture_quality(ml, probe_raw)]
+    calls = []
+    if quality_enabled:
+        calls.append(fetch_capture_quality(ml, probe_raw))
     if liveness_enabled:
         calls.append(_check_liveness(ml, probe_raw))
     # return_exceptions so one failing call never leaves the other running
     # unobserved; errors are then raised in a fixed order (quality first) so
     # identical requests always get the same answer.
-    results = await asyncio.gather(*calls, return_exceptions=True)
-    quality = results[0]
-    liveness = results[1] if liveness_enabled else None
-    if isinstance(quality, HTTPException) and quality.status_code == 400:
+    results = list(await asyncio.gather(*calls, return_exceptions=True))
+    quality = results.pop(0) if quality_enabled else None
+    liveness = results.pop(0) if liveness_enabled else None
+    if (isinstance(quality, HTTPException) and quality.status_code == 400) or isinstance(
+        liveness, ProbeImageDecodeError
+    ):
         # An unreadable selfie is an outcome, not an error — as face match
         # reports it (decodeFailed) — so the rider gets a retake, not a retry.
         return {
@@ -158,9 +165,10 @@ async def _quality_gate(ml, probe_raw: bytes, requested, *, liveness_enabled: bo
         if isinstance(result, BaseException):
             raise result
 
-    issues = [i for i in quality.issues if want_dress or i not in _SHIRT_ISSUES]
-    checks: dict[str, dict] = {
-        "quality": {
+    checks: dict[str, dict] = {}
+    if quality is not None:
+        issues = [i for i in quality.issues if want_dress or i not in _SHIRT_ISSUES]
+        checks["quality"] = {
             "passed": not issues,
             "issues": issues,
             "warnings": quality_warnings(issues),
@@ -172,7 +180,6 @@ async def _quality_gate(ml, probe_raw: bytes, requested, *, liveness_enabled: bo
             },
             "shirt": {"visible": quality.shirt_visible, "blur": quality.shirt_blur},
         }
-    }
     if liveness is not None:
         checks["liveness"] = {
             "passed": liveness.is_live,
@@ -305,12 +312,14 @@ async def checkpoint_verify(
     body: dict = {"requestId": request_id, "checksRequested": list(requested)}
 
     liveness = None
-    if getattr(settings, "checkpoint_quality_gate", False):
+    quality_enabled = req.quality_check
+    if getattr(settings, "checkpoint_quality_gate", False) and (quality_enabled or settings.liveness_enabled):
         gate = await _quality_gate(
             request.app.state.ml_async,
             probe_raw,
             requested,
             liveness_enabled=settings.liveness_enabled,
+            quality_enabled=quality_enabled,
         )
         checks.update(gate["checks"])
         liveness = gate["liveness"]
