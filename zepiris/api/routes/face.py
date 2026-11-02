@@ -363,6 +363,7 @@ async def facematch_from_bytes(
     matcher,
     learner,
     liveness: SpoofDetectionResult | None = None,
+    liveness_enabled: bool | None = None,
 ) -> dict:
     """Facematch on already-resolved bytes: threshold, liveness gate, match, learning log.
 
@@ -380,7 +381,7 @@ async def facematch_from_bytes(
             return liveness
 
         liveness_check = _known_liveness
-    elif settings.liveness_enabled:
+    elif settings.liveness_enabled if liveness_enabled is None else liveness_enabled:
         # Read from app state only when the gate is on, so a deployment with
         # liveness off never touches the liveness client at all.
         ml = request.app.state.ml_async

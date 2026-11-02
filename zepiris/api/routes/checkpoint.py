@@ -202,6 +202,7 @@ async def _infer(
     probe_raw: bytes | None = None,
     reference_raw: bytes | None = None,
     liveness: SpoofDetectionResult | None = None,
+    liveness_enabled: bool | None = None,
 ) -> dict:
     """Run the requested checks once: {requested, face, dress, probe_raw}.
 
@@ -244,6 +245,7 @@ async def _infer(
             matcher=matcher,
             learner=learner,
             liveness=liveness,
+            liveness_enabled=liveness_enabled,
         )
     if want_dress:
         tasks["dress"] = score_dresscode(
@@ -313,12 +315,13 @@ async def checkpoint_verify(
 
     liveness = None
     quality_enabled = req.quality_check
-    if getattr(settings, "checkpoint_quality_gate", False) and (quality_enabled or settings.liveness_enabled):
+    liveness_enabled = settings.liveness_enabled and req.liveness_check
+    if getattr(settings, "checkpoint_quality_gate", False) and (quality_enabled or liveness_enabled):
         gate = await _quality_gate(
             request.app.state.ml_async,
             probe_raw,
             requested,
-            liveness_enabled=settings.liveness_enabled,
+            liveness_enabled=liveness_enabled,
             quality_enabled=quality_enabled,
         )
         checks.update(gate["checks"])
@@ -333,7 +336,7 @@ async def checkpoint_verify(
 
     r = await _infer(
         request, req, settings, matcher, fetcher, learner, request_id,
-        probe_raw=probe_raw, reference_raw=reference_raw, liveness=liveness,
+        probe_raw=probe_raw, reference_raw=reference_raw, liveness=liveness, liveness_enabled=liveness_enabled,
     )
     face, dress = r["face"], r["dress"]
 

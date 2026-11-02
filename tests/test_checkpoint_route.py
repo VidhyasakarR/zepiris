@@ -284,6 +284,14 @@ def test_quality_check_false_skips_quality_but_keeps_liveness() -> None:
     assert body["isCleared"] is True
 
 
+def test_liveness_check_false_skips_liveness_but_keeps_quality() -> None:
+    ml = _ML(issues=[])
+    body = _post(_client(ml, gate=True, liveness=True), liveness_check=False).json()
+    assert ml.liveness_calls == 0
+    assert "liveness" not in body["checks"]
+    assert body["checks"]["quality"]["passed"] is True
+
+
 def test_quality_check_false_and_no_liveness_skips_the_gate() -> None:
     ml = _ML(issues=["face_blurry"])
     body = _post(_client(ml, gate=True), quality_check=False).json()
