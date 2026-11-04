@@ -338,7 +338,7 @@ async def checkpoint_verify(
             # rider goes online anyway), but a failed scoring must not turn a
             # retake into an error.
             body["failedAt"] = "quality_gate"
-            deadline = getattr(settings, "checkpoint_score_on_gate_fail_deadline_s", 4.0)
+            deadline = getattr(settings, "checkpoint_score_on_gate_fail_deadline_s", 1.5)
             left = deadline - (time.monotonic() - started)
             if (
                 getattr(settings, "checkpoint_score_on_gate_fail", True)

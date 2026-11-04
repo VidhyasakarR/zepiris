@@ -22,7 +22,7 @@ class _Settings:
     allow_threshold_override = False
     checkpoint_quality_gate = False
     checkpoint_score_on_gate_fail = True
-    checkpoint_score_on_gate_fail_deadline_s = 4.0
+    checkpoint_score_on_gate_fail_deadline_s = 1.5
 
 
 class _ML:

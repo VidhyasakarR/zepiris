@@ -63,11 +63,12 @@ class Settings(BaseSettings):
     # the caller can save the scores (an exempted rider goes online anyway). The
     # selfie stays not cleared. Off = stop at the gate, one inference fewer.
     checkpoint_score_on_gate_fail: bool = True
-    # A failed-gate answer goes out by this many seconds after the handler
-    # starts; scoring only gets what is left. Titan's own timeout (default 5s)
-    # must not run out on a retake, or a bad photo goes through as "check down";
-    # the margin covers the time before the handler (queue, upload, parsing).
-    checkpoint_score_on_gate_fail_deadline_s: float = 4.0
+    # Scoring after a failed gate stops this many seconds after the handler
+    # starts, so it only gets what the image fetch and the gate left. It does
+    # not bound the fetch or the gate themselves. Titan's own timeout (default
+    # 2s) must not run out on a retake, or a bad photo goes through as "check
+    # down"; the margin covers the time before the handler (queue, parsing).
+    checkpoint_score_on_gate_fail_deadline_s: float = 1.5
     # Image URLs (face_check_s3 / source_selfie_s3 / image_s3) come from rider
     # devices: refuse ones that point into the private network (the ML service,
     # cloud metadata at 169.254.169.254, ...). Comma list of allowed hosts, exact
