@@ -21,6 +21,8 @@ class _Settings:
     liveness_enabled = False
     allow_threshold_override = False
     checkpoint_quality_gate = False
+    checkpoint_score_on_gate_fail = True
+    checkpoint_score_on_gate_fail_deadline_s = 4.0
 
 
 class _ML:
@@ -59,7 +61,8 @@ class _CountingEmbedding(_Embedding):
         return super().embed(image_rgb)
 
 
-def _client(ml: _ML, *, ref_vec=_VEC, liveness=False, overrides=False, gate=False) -> TestClient:
+def _client(ml: _ML, *, ref_vec=_VEC, liveness=False, overrides=False, gate=False,
+            score_on_gate_fail=True) -> TestClient:
     app = FastAPI()
     register_exception_handlers(app)
     app.include_router(checkpoint_routes.router, prefix="/v1/checkpoint")
@@ -67,6 +70,7 @@ def _client(ml: _ML, *, ref_vec=_VEC, liveness=False, overrides=False, gate=Fals
     settings.liveness_enabled = liveness
     settings.allow_threshold_override = overrides
     settings.checkpoint_quality_gate = gate
+    settings.checkpoint_score_on_gate_fail = score_on_gate_fail
     app.state.ml_async = ml
     embedding = _CountingEmbedding(live_vec=_VEC, ref_vec=ref_vec)
     _CountingEmbedding.calls = 0
@@ -240,25 +244,88 @@ def test_gate_passes_then_runs_face_and_dress() -> None:
     assert body["checks"]["face_match"]["liveness"] == 0.9
 
 
-def test_blurry_face_stops_before_face_match_and_dress() -> None:
+def test_blurry_face_is_not_cleared_but_still_scored() -> None:
     ml = _ML(issues=["face_blurry"])
     body = _post(_client(ml, gate=True)).json()
     assert body["isCleared"] is False
     assert body["failedAt"] == "quality_gate"
     assert body["checks"]["quality"]["issues"] == ["face_blurry"]
     assert body["checks"]["quality"]["warnings"][0]["region"] == "face"
+    # scored anyway so the caller can save them; passing scores do not clear it
+    assert body["checks"]["face_match"]["passed"] is True
+    assert body["checks"]["dress_color"]["score"] == 0.9
+    assert body["checks"]["logo"]["score"] == 0.8
+    assert ml.dress_calls == 1
+
+
+def test_gate_failure_stops_without_scoring_when_turned_off() -> None:
+    ml = _ML(issues=["face_blurry"])
+    body = _post(_client(ml, gate=True, score_on_gate_fail=False)).json()
+    assert body["isCleared"] is False
+    assert body["failedAt"] == "quality_gate"
     assert "face_match" not in body["checks"] and "faceMatch" not in body
     assert ml.dress_calls == 0
     assert _CountingEmbedding.calls == 0
 
 
-def test_spoof_stops_before_face_match() -> None:
+def test_spoof_is_not_cleared_but_still_scored() -> None:
     ml = _ML(live=False)
     body = _post(_client(ml, gate=True, liveness=True)).json()
     assert body["isCleared"] is False
     assert body["failedAt"] == "quality_gate"
     assert body["checks"]["liveness"]["passed"] is False
+    assert "dress_color" in body["checks"]
+    # the gate's liveness result is reused, not fetched again
+    assert ml.liveness_calls == 1
+
+
+def test_slow_scoring_after_gate_failure_gives_the_gate_answer_in_time() -> None:
+    import asyncio as _asyncio
+
+    class _SlowDressML(_ML):
+        started = 0
+
+        async def check_dresscode(self, image: bytes):
+            self.started += 1
+            await _asyncio.sleep(2.0)
+            return await super().check_dresscode(image)
+
+    ml = _SlowDressML(issues=["shirt_not_visible"])
+    client = _client(ml, gate=True)
+    client.app.dependency_overrides[SettingsDep.__metadata__[0].dependency]().checkpoint_score_on_gate_fail_deadline_s = 0.8
+    r = _post(client)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["isCleared"] is False
+    assert body["failedAt"] == "quality_gate"
+    assert "dress_color" not in body["checks"]
+    # scoring did start, and was cut off by the deadline
+    assert ml.started == 1
+
+
+def test_no_scoring_when_the_gate_used_up_the_deadline() -> None:
+    ml = _ML(issues=["shirt_not_visible"])
+    client = _client(ml, gate=True)
+    client.app.dependency_overrides[SettingsDep.__metadata__[0].dependency]().checkpoint_score_on_gate_fail_deadline_s = 0.0
+    body = _post(client).json()
+    assert body["failedAt"] == "quality_gate"
     assert ml.dress_calls == 0
+    assert _CountingEmbedding.calls == 0
+
+
+def test_scoring_error_after_gate_failure_is_still_a_retake() -> None:
+    class _DressDownML(_ML):
+        async def check_dresscode(self, image: bytes):
+            raise RuntimeError("dress model down")
+
+    ml = _DressDownML(issues=["shirt_not_visible"])
+    r = _post(_client(ml, gate=True))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["isCleared"] is False
+    assert body["failedAt"] == "quality_gate"
+    assert body["checks"]["quality"]["issues"] == ["shirt_not_visible"]
+    assert "dress_color" not in body["checks"]
 
 
 def test_shirt_issues_ignored_when_no_dress_check() -> None:

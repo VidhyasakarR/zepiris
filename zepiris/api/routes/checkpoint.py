@@ -18,9 +18,10 @@ face-only).
 With ``ZEPIRIS_CHECKPOINT_QUALITY_GATE`` (on by default) ``/verify`` first
 runs a quality gate on the selfie — capture quality (face found / big enough /
 lit / sharp, T-shirt visible / sharp) and, with ``ZEPIRIS_LIVENESS_ENABLED``,
-liveness, concurrently. A selfie that fails the gate is not cleared and face
-match and dress code are not run: a blurry or spoofed photo would only produce
-scores nobody should trust, and stopping early spares two inferences.
+liveness, concurrently. A selfie that fails the gate is never cleared. With
+``ZEPIRIS_CHECKPOINT_SCORE_ON_GATE_FAIL`` (on by default) face match and dress
+code still run on it, so the caller can save the scores; off, the gate stops
+there and spares two inferences.
 
 Two responses from the same inference:
 
@@ -35,6 +36,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -60,8 +63,11 @@ from zepiris.schemas.ml_inference import (
 from zepiris.services.matching import FaceMatcher, RemoteFaceMatcher
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 _DRESS_CHECKS = ("dress_color", "logo")
+# Less time than this left before the failed-gate deadline: do not start scoring.
+_MIN_SCORING_S = 0.2
 
 #: Capture-quality issues about the T-shirt; they only matter when a dress
 #: check was requested, so a face-only checkpoint is not failed on them.
@@ -305,6 +311,7 @@ async def checkpoint_verify(
     learner: LearnerDep,
 ) -> dict:
     """Run the requested checks on the live selfie; cleared only if all pass."""
+    started = time.monotonic()
     request_id = str(uuid.uuid4())
     _reject_overrides(req, settings)
     requested = req.requested()
@@ -327,9 +334,29 @@ async def checkpoint_verify(
         checks.update(gate["checks"])
         liveness = gate["liveness"]
         if not gate["passed"]:
-            # Stop here: face match and dress code are not run on a selfie
-            # that failed quality or liveness.
+            # Never cleared. The scores are still worth saving (an exempted
+            # rider goes online anyway), but a failed scoring must not turn a
+            # retake into an error.
             body["failedAt"] = "quality_gate"
+            deadline = getattr(settings, "checkpoint_score_on_gate_fail_deadline_s", 4.0)
+            left = deadline - (time.monotonic() - started)
+            if (
+                getattr(settings, "checkpoint_score_on_gate_fail", True)
+                and not _unreadable(checks)
+                and left > _MIN_SCORING_S
+            ):
+                try:
+                    r = await asyncio.wait_for(
+                        _infer(
+                            request, req, settings, matcher, fetcher, learner, request_id,
+                            probe_raw=probe_raw, reference_raw=reference_raw, liveness=liveness,
+                            liveness_enabled=liveness_enabled,
+                        ),
+                        timeout=left,
+                    )
+                    _add_scores(body, checks, r, req, requested)
+                except Exception as exc:  # noqa: BLE001 - scores are best-effort here
+                    log.warning("checkpoint %s: scoring after gate failure failed: %r", request_id, exc)
             body["isCleared"] = False
             body["checks"] = checks
             return body
@@ -338,6 +365,19 @@ async def checkpoint_verify(
         request, req, settings, matcher, fetcher, learner, request_id,
         probe_raw=probe_raw, reference_raw=reference_raw, liveness=liveness, liveness_enabled=liveness_enabled,
     )
+    _add_scores(body, checks, r, req, requested)
+    body["isCleared"] = all(c["passed"] for c in checks.values())
+    body["checks"] = checks
+    return body
+
+
+def _unreadable(checks: dict) -> bool:
+    """The gate could not decode the selfie, so scoring it would only fail again."""
+    return "image_unreadable" in ((checks.get("quality") or {}).get("issues") or [])
+
+
+def _add_scores(body: dict, checks: dict, r: dict, req: CheckpointRequest, requested) -> None:
+    """Face match and dress code results from ``_infer`` into ``checks`` and ``body``."""
     face, dress = r["face"], r["dress"]
 
     if face is not None:
@@ -365,10 +405,6 @@ async def checkpoint_verify(
         dress_body = dress.model_dump(by_alias=True)
         dress_body.pop("requestId", None)
         body["dresscode"] = dress_body
-
-    body["isCleared"] = all(c["passed"] for c in checks.values())
-    body["checks"] = checks
-    return body
 
 
 @router.post("/score")

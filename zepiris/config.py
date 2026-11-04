@@ -59,6 +59,15 @@ class Settings(BaseSettings):
     # that fails is rejected there with rider-facing warnings, and face match and
     # dress code are not run. Off = the old behaviour, as a rollback.
     checkpoint_quality_gate: bool = True
+    # Still score face match and dress code on a selfie that failed the gate, so
+    # the caller can save the scores (an exempted rider goes online anyway). The
+    # selfie stays not cleared. Off = stop at the gate, one inference fewer.
+    checkpoint_score_on_gate_fail: bool = True
+    # A failed-gate answer goes out by this many seconds after the handler
+    # starts; scoring only gets what is left. Titan's own timeout (default 5s)
+    # must not run out on a retake, or a bad photo goes through as "check down";
+    # the margin covers the time before the handler (queue, upload, parsing).
+    checkpoint_score_on_gate_fail_deadline_s: float = 4.0
     # Image URLs (face_check_s3 / source_selfie_s3 / image_s3) come from rider
     # devices: refuse ones that point into the private network (the ML service,
     # cloud metadata at 169.254.169.254, ...). Comma list of allowed hosts, exact
