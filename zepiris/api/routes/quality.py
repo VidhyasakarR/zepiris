@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from zepiris.api.image_source import resolve_image_source
 from zepiris.deps import MLAsyncDep, S3FetcherDep
+from zepiris.schemas.ml_inference import CaptureQualityResult
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -30,6 +31,7 @@ MESSAGES = {
     "face_blurry": ("face", "Face is blurry — hold the phone steady and retake."),
     "shirt_not_visible": ("shirt", "T-shirt not visible — show your T-shirt down to the stomach."),
     "shirt_blurry": ("shirt", "T-shirt is blurry — hold the phone steady and retake."),
+    "image_unreadable": ("photo", "Photo could not be read — please retake."),
 }
 
 
@@ -38,12 +40,13 @@ class QualityCheckRequest(BaseModel):
     image_s3: str | None = None
 
 
-@router.post("/check")
-async def quality_check(req: QualityCheckRequest, fetcher: S3FetcherDep, ml: MLAsyncDep) -> dict:
-    """``ok`` is true when nothing needs fixing; otherwise ``warnings`` says what."""
-    raw = await resolve_image_source(b64=req.image_b64, s3_url=req.image_s3, fetcher=fetcher, field="image")
+async def fetch_capture_quality(ml, raw: bytes) -> CaptureQualityResult:
+    """Call the ML capture-quality check, mapping failures to rider-actionable errors.
+
+    Shared with the checkpoint's quality gate so both report the same statuses.
+    """
     try:
-        q = await ml.check_quality(raw)
+        return await ml.check_quality(raw)
     except httpx.HTTPStatusError as exc:
         # Pass on what the rider can act on (bad image / too big / overloaded),
         # never the ML service's internals.
@@ -58,13 +61,26 @@ async def quality_check(req: QualityCheckRequest, fetcher: S3FetcherDep, ml: MLA
     except httpx.HTTPError as exc:
         log.warning("quality check: ML service unreachable: %s", exc)
         raise HTTPException(status_code=503, detail={"message": "quality_check_unavailable"}) from exc
+
+
+def quality_warnings(issues: list[str]) -> list[dict]:
+    """Rider-facing warning per issue code."""
+    warnings = []
+    for code in issues:
+        region, message = MESSAGES.get(code, ("photo", code))
+        warnings.append({"code": code, "region": region, "message": message})
+    return warnings
+
+
+@router.post("/check")
+async def quality_check(req: QualityCheckRequest, fetcher: S3FetcherDep, ml: MLAsyncDep) -> dict:
+    """``ok`` is true when nothing needs fixing; otherwise ``warnings`` says what."""
+    raw = await resolve_image_source(b64=req.image_b64, s3_url=req.image_s3, fetcher=fetcher, field="image")
+    q = await fetch_capture_quality(ml, raw)
     return {
         "requestId": str(uuid.uuid4()),
         "ok": not q.issues,
-        "warnings": [
-            {"code": code, "region": MESSAGES.get(code, ("photo", code))[0], "message": MESSAGES.get(code, ("photo", code))[1]}
-            for code in q.issues
-        ],
+        "warnings": quality_warnings(q.issues),
         "face": {"detected": q.face_detected, "width": q.face_width, "brightness": q.face_brightness, "blur": q.face_blur},
         "shirt": {"visible": q.shirt_visible, "blur": q.shirt_blur},
     }

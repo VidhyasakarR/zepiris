@@ -31,6 +31,12 @@ class CheckpointRequest(BaseModel):
     checks: list[Check] | None = Field(
         None, description='Subset of ["face_match", "dress_color", "logo"]; omitted = all.'
     )
+    quality_check: bool = Field(
+        True, description="false = skip the capture-quality gate for this request (liveness still runs)."
+    )
+    liveness_check: bool = Field(
+        True, description="false = no liveness for this request, in the gate or the face match (server setting still applies)."
+    )
     # Pass-mark overrides: rejected unless ZEPIRIS_ALLOW_THRESHOLD_OVERRIDE, and
     # always bounded (and finite) so even a trusted caller cannot disable a check.
     threshold: float | None = Field(None, ge=0.05, le=0.99, allow_inf_nan=False, description="Face-match threshold override.")

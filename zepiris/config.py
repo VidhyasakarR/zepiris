@@ -53,6 +53,22 @@ class Settings(BaseSettings):
     # back to the two concurrent calls, as a rollback without a code deploy.
     # Only applies with match_mode="remote".
     checkpoint_single_call: bool = True
+    # Quality gate on /v1/checkpoint/verify: before face match and dress code,
+    # grade the selfie (face found / big enough / lit / sharp, T-shirt visible /
+    # sharp) and, with liveness_enabled, run liveness — concurrently. A selfie
+    # that fails is rejected there with rider-facing warnings, and face match and
+    # dress code are not run. Off = the old behaviour, as a rollback.
+    checkpoint_quality_gate: bool = True
+    # Still score face match and dress code on a selfie that failed the gate, so
+    # the caller can save the scores (an exempted rider goes online anyway). The
+    # selfie stays not cleared. Off = stop at the gate, one inference fewer.
+    checkpoint_score_on_gate_fail: bool = True
+    # Scoring after a failed gate stops this many seconds after the handler
+    # starts, so it only gets what the image fetch and the gate left. It does
+    # not bound the fetch or the gate themselves. Titan's own timeout (default
+    # 2s) must not run out on a retake, or a bad photo goes through as "check
+    # down"; the margin covers the time before the handler (queue, parsing).
+    checkpoint_score_on_gate_fail_deadline_s: float = 1.5
     # Image URLs (face_check_s3 / source_selfie_s3 / image_s3) come from rider
     # devices: refuse ones that point into the private network (the ML service,
     # cloud metadata at 169.254.169.254, ...). Comma list of allowed hosts, exact
