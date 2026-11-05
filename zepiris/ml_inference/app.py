@@ -324,10 +324,27 @@ def _ort_providers(device: str) -> list[str]:
     return ["CPUExecutionProvider"]
 
 
+def _torch_device(device: str) -> str:
+    """The configured device for the PyTorch models, else CPU when torch has no CUDA.
+
+    The image installs the CPU-only torch wheel (pyproject's pytorch-cpu source):
+    the GPU models run on ONNX Runtime. Handing "cuda" to a torch model there
+    fails its load, and a missing blur model takes down the capture-quality
+    check, so every checkpoint request with the quality gate on returns 503.
+    """
+    import torch
+
+    if device != "cpu" and not torch.cuda.is_available():
+        logger.info("torch has no CUDA; PyTorch models (blur, NSFW, MobileNet spoof) run on CPU")
+        return "cpu"
+    return device
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     s = get_ml_settings()
     device = s.ml_device
+    torch_device = _torch_device(device)
 
     # Admission control first, so the app can shed load even if a model fails.
     app.state.inference_limiter = InferenceLimiter.from_settings(
@@ -369,7 +386,7 @@ async def lifespan(app: FastAPI):
                 local_model_path=s.nsfw_local_model_path or None,
                 model_source=s.nsfw_model_source,
                 nsfw_threshold=s.nsfw_threshold,
-                device=device,
+                device=torch_device,
             )
             app.state.nsfw_service.load_model()
         except Exception:
@@ -485,7 +502,7 @@ async def lifespan(app: FastAPI):
             model_source=s.spoof_model_source,
             spoof_threshold=s.spoof_threshold,
             screen_replay_detector=screen,
-            device=device,
+            device=torch_device,
         )
         svc.load_model()
         logger.info("Spoof engine: legacy MobileNetV3")
@@ -540,7 +557,7 @@ async def lifespan(app: FastAPI):
                 local_model_path=s.blur_local_model_path or None,
                 model_source=s.blur_model_source,
                 blur_threshold=s.blur_threshold,
-                device=device,
+                device=torch_device,
             )
             app.state.blur_service.load_model()
         except Exception:
