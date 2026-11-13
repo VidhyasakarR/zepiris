@@ -77,6 +77,19 @@ RUN if [ -n "$ONNXRUNTIME_GPU_VERSION" ]; then \
 
 COPY models/ /app/models/
 
+# The SigLIP2 dress-code encoder is gitignored (370 MB), so a build from a clean
+# checkout has no copy of it. Without it the service only logs a warning and falls back to the
+# colour rule, and the API then answers 503 dresscode_model_unavailable on every
+# checkpoint asking dress_color / logo (prod-qc, 2026-11-13). Fail the build
+# instead of shipping that image. Fetch it first:
+#   aws s3 cp s3://zepiris-model/siglip2_base_vision.onnx models/
+# Local builds that do not need the dress checks: --build-arg ALLOW_MISSING_DRESSCODE_MODEL=true
+ARG ALLOW_MISSING_DRESSCODE_MODEL=false
+RUN if [ ! -s /app/models/siglip2_base_vision.onnx ] && [ "$ALLOW_MISSING_DRESSCODE_MODEL" != "true" ]; then \
+        echo "ERROR: models/siglip2_base_vision.onnx is missing. Run: aws s3 cp s3://zepiris-model/siglip2_base_vision.onnx models/  (or --build-arg ALLOW_MISSING_DRESSCODE_MODEL=true)" >&2; \
+        exit 1; \
+    fi
+
 RUN useradd --uid 1000 --create-home --shell /usr/sbin/nologin appuser \
     && mkdir -p /home/appuser/.insightface \
     && chown -R appuser:appuser /app /home/appuser/.insightface
