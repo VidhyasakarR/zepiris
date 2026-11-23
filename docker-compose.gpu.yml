@@ -31,8 +31,14 @@ services:
     # process cannot use more cores. More processes can.
     #
     # 3 on a 4-vCPU host leaves a core for the API and the event loops. Each
-    # worker loads its own copy of the models into GPU memory (~1.4 GB), so 3 is
-    # ~4.2 GB of the T4's 15 GB — and each warms up at startup, so boot is slower.
+    # worker loads its own copy of the models into GPU memory, and each warms up
+    # at startup, so boot is slower.
+    #
+    # Do not raise this on a T4 without capping GPU memory first. Measured in
+    # prod 2026-11-23 with the checkpoint models loaded: 3.8-5.8 GB per worker,
+    # 14.5 of 15.4 GB in total (not the ~1.4 GB each the face models alone
+    # take). ONNX Runtime's CUDA arena keeps what it grows to and nothing caps
+    # it, so a 4th worker has nowhere to load.
     command:
       - python
       - -m
@@ -87,7 +93,13 @@ services:
       # still ran 24s+ because the waiting simply happened before the limiter.
       # Keep the API's own budget (ZEPIRIS_ML_INFERENCE_TIMEOUT_SECONDS, 10s)
       # above this, or the API gives up before the ML service sheds.
-      ML_SERVICE_INFERENCE_QUEUE_TIMEOUT_SECONDS: "2"
+      #
+      # 1s since 2026-11-23: titan gives up on the checkpoint at 2s, and a
+      # checkpoint takes ~0.25s to serve, so a request that has queued 1s can
+      # still be answered in time and one that has queued 2s cannot. At 2s the
+      # limiter never fired (shed_total 0) while titan timed out 46 calls in
+      # one shift-start burst.
+      ML_SERVICE_INFERENCE_QUEUE_TIMEOUT_SECONDS: "1"
       # Parallel pair embedding fans one request's two sides across CPU workers.
       # Off here: with 3 GIL-bound worker processes already competing for 4 cores,
       # fanning out inside a request steals throughput from other requests to
@@ -123,7 +135,8 @@ services:
       ML_SERVICE_DRESSCODE_LOGO_OCR_USE_CUDA: "true"
       ML_SERVICE_DRESSCODE_LOGO_OCR_THREADS: "1"
       ML_SERVICE_DRESSCODE_LOGO_OCR_MAX_CONCURRENCY: "2"
-      ML_SERVICE_DRESSCODE_LOGO_OCR_QUEUE_TIMEOUT_SECONDS: "2"
+      # 1s for the same reason as the inference queue: titan is gone at 2s.
+      ML_SERVICE_DRESSCODE_LOGO_OCR_QUEUE_TIMEOUT_SECONDS: "1"
 
       # -----------------------------------------------------------------------
       # Throughput tuning (tasks 1-4 in the optimisation pass)
@@ -216,14 +229,21 @@ services:
       # instance at idle, which is what the earlier attempt that "returned
       # 1500 errors with nothing served" actually measured.
       #
-      # 40 x 2 workers = 80 in flight. Sized from the latency promise, not
-      # from capacity: at ~150 req/s throughput, 80 in flight bounds queue
-      # delay near 80/150 = 0.53s, while a healthy 150 req/s load carries ~45
-      # in flight (S3 fetch + ML call, ~0.3s worst) — so nothing is shed until
-      # the box is genuinely past what it can serve, and overflow arrives as
-      # clean, fast 503s instead of 24-second zombies. Watch it at
-      # GET /metrics -> admission.shed_total.
-      ZEPIRIS_API_LIMIT_CONCURRENCY: "40"
+      # 8 x 2 workers = 16 in flight. Sized from the caller's deadline, not
+      # from capacity: sustainable in-flight = throughput x deadline. A
+      # g4dn.xlarge serves 8 checkpoint req/s (on-box ramp 2026-11-23: p50 276ms
+      # at 8/s; p50 2419ms with 70% of calls over 2s at 10/s) and titan gives up
+      # at 2s, so 8 x 2 = 16 is the most this box can hold and still answer in
+      # time. Past that the request is already lost to its caller; a fast 503
+      # lets titan skip the rider at once and keeps the box working on calls
+      # that can still land. A healthy 8 req/s carries 2-3 in flight.
+      #
+      # The old 40 (80 in flight) was sized for facematch at ~150 req/s and
+      # never fired for checkpoint: shed_total stayed 0 while titan timed out.
+      # If /facematch/verify traffic returns at volume (~45 in flight healthy),
+      # this needs raising or the two routes need separate limits.
+      # Watch it at GET /metrics -> admission.shed_total.
+      ZEPIRIS_API_LIMIT_CONCURRENCY: "8"
 
       # The enrolled selfie's bytes, cached in-process by URL (256 MiB budget,
       # ~800 references). Production reference URLs are content-unique S3 keys,
@@ -234,6 +254,12 @@ services:
       # service's embedding cache its ~2/3 hit rate. Watch it at
       # GET /metrics -> reference_bytes_cache.hit_rate during a load run.
       ZEPIRIS_S3_CACHE_MAX_BYTES: "268435456"
+      # 12h, not the 15-min default. Measured in prod 2026-11-23: hit rate 0.416
+      # with 11453 expired and 0 evicted, using 43 of 256 MiB. Riders go online
+      # once or twice a day, so entries expired long before their next use. 12h
+      # covers a morning and an evening shift. Only as safe as the note above:
+      # a profile photo overwritten under the same key is served stale for 12h.
+      ZEPIRIS_S3_CACHE_TTL_SECONDS: "43200"
 
       # An S3 GET that has not answered in 5s is not going to make the request:
       # at 10s (the old default) a hung fetch held an admission slot for the
@@ -242,13 +268,13 @@ services:
       # below this; the timeout exists for the pathological connection.
       ZEPIRIS_REFERENCE_FETCH_TIMEOUT_SECONDS: "5"
 
-      # 10s, not the 60s default. The caller (titan's zepiris feign client) gives up at 3s, so any
+      # 10s, not the 60s default. The caller (titan's go-online checkpoint) gives up at 2s, so any
       # request still running past that is work nobody will read — it holds an admission slot and an
       # inference slot while the caller has already recorded a failure and alerted. 60s made one
       # slow request cost a minute of capacity during exactly the incident that caused it. Still well
       # above the 2s inference queue timeout below, so the shedding path is unchanged; this only
-      # bounds the pathological hang. Titan's 3s read timeout is the number to align to if this ever
-      # needs to be exact — see the feign zepiris block in application-prod-titan-sqs.yml.
+      # bounds the pathological hang. Titan's 2s read timeout is the number to align to if this ever
+      # needs to be exact — application_config zepirisCheckpointVerifyTimeoutMs, default 2000.
       ZEPIRIS_ML_INFERENCE_TIMEOUT_SECONDS: "10"
 
       # Liveness gate on /facematch/verify (runs concurrently with the match).
