@@ -229,21 +229,22 @@ services:
       # instance at idle, which is what the earlier attempt that "returned
       # 1500 errors with nothing served" actually measured.
       #
-      # 8 x 2 workers = 16 in flight. Sized from the caller's deadline, not
-      # from capacity: sustainable in-flight = throughput x deadline. A
-      # g4dn.xlarge serves 8 checkpoint req/s (on-box ramp 2026-11-23: p50 276ms
-      # at 8/s; p50 2419ms with 70% of calls over 2s at 10/s) and titan gives up
-      # at 2s, so 8 x 2 = 16 is the most this box can hold and still answer in
-      # time. Past that the request is already lost to its caller; a fast 503
-      # lets titan skip the rider at once and keeps the box working on calls
-      # that can still land. A healthy 8 req/s carries 2-3 in flight.
+      # 6 x 2 workers = 12 in flight. Sized from the caller's deadline, not
+      # from capacity: a request admitted behind N others waits about
+      # N / throughput. A g4dn.xlarge serves 8 checkpoint req/s (on-box ramp
+      # 2026-11-23: p50 276ms at 8/s; p50 2419ms with 70% of calls over 2s at
+      # 10/s) and titan gives up at 2s, so 12 in flight is ~1.5s: the last
+      # request admitted still lands with 0.5s to spare for the network and
+      # titan's own work. Past that the request is already lost to its caller;
+      # a fast 503 lets titan skip the rider at once and keeps the box working
+      # on calls that can still land. A healthy 8 req/s carries 2-3 in flight.
       #
       # The old 40 (80 in flight) was sized for facematch at ~150 req/s and
       # never fired for checkpoint: shed_total stayed 0 while titan timed out.
       # If /facematch/verify traffic returns at volume (~45 in flight healthy),
       # this needs raising or the two routes need separate limits.
       # Watch it at GET /metrics -> admission.shed_total.
-      ZEPIRIS_API_LIMIT_CONCURRENCY: "8"
+      ZEPIRIS_API_LIMIT_CONCURRENCY: "6"
 
       # The enrolled selfie's bytes, cached in-process by URL (256 MiB budget,
       # ~800 references). Production reference URLs are content-unique S3 keys,

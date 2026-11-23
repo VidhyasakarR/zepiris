@@ -199,3 +199,42 @@ def test_failed_fetch_is_not_cached() -> None:
     with pytest.raises(ReferenceImageFetchError):
         asyncio.run(fetcher.fetch("https://s3/ref.jpg", cacheable=True))
     assert asyncio.run(fetcher.fetch("https://s3/ref.jpg", cacheable=True)) == b"good"
+
+
+def test_dropped_keepalive_connection_is_retried_once():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url)
+        if len(calls) == 1:
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response.", request=request)
+        return httpx.Response(200, content=b"imagebytes")
+
+    assert _fetch(_fetcher(handler), "https://bucket.s3.amazonaws.com/a.jpg") == b"imagebytes"
+    assert len(calls) == 2
+
+
+def test_transport_error_twice_is_reported():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url)
+        raise httpx.RemoteProtocolError("Server disconnected without sending a response.", request=request)
+
+    with pytest.raises(ReferenceImageFetchError) as exc:
+        _fetch(_fetcher(handler), "https://bucket.s3.amazonaws.com/a.jpg")
+    assert exc.value.detail["reason"] == "transport_error"
+    assert len(calls) == 2
+
+
+def test_timeout_is_not_retried():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url)
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    with pytest.raises(ReferenceImageFetchError) as exc:
+        _fetch(_fetcher(handler), "https://bucket.s3.amazonaws.com/a.jpg")
+    assert exc.value.detail["reason"] == "timeout"
+    assert len(calls) == 1

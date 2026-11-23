@@ -179,25 +179,24 @@ class S3ImageFetcher:
             if cached is not None:
                 return cached
 
-        # Streamed, so an oversized (or endless) body is cut off at max_bytes
-        # instead of being read into memory first.
         try:
-            async with self._client.stream("GET", url) as response:
-                if response.status_code != 200:
-                    raise ReferenceImageFetchError(
-                        reason="bad_status", detail_msg=f"status_{response.status_code}"
-                    )
-                chunks, size = [], 0
-                async for chunk in response.aiter_bytes():
-                    size += len(chunk)
-                    if size > self._max_bytes:
-                        raise ReferenceImageFetchError(
-                            reason="too_large", detail_msg=f"over_{self._max_bytes}_bytes"
-                        )
-                    chunks.append(chunk)
-                data = b"".join(chunks)
+            data = await self._get(url)
         except httpx.TimeoutException as exc:
             raise ReferenceImageFetchError(reason="timeout", detail_msg="timeout") from exc
+        except httpx.TransportError:
+            # One retry, on a fresh connection. S3 closes idle keep-alive
+            # connections, and a GET that lands on one fails at once with
+            # RemoteProtocolError: a few go-online checks a day were answered
+            # 400 for that alone. A timeout is not retried: it has already
+            # spent the caller's budget.
+            try:
+                data = await self._get(url)
+            except httpx.TimeoutException as exc:
+                raise ReferenceImageFetchError(reason="timeout", detail_msg="timeout") from exc
+            except httpx.HTTPError as exc:
+                raise ReferenceImageFetchError(
+                    reason="transport_error", detail_msg=type(exc).__name__
+                ) from exc
         except httpx.HTTPError as exc:
             raise ReferenceImageFetchError(reason="transport_error", detail_msg=type(exc).__name__) from exc
         if not data:
@@ -206,6 +205,24 @@ class S3ImageFetcher:
         if cacheable:
             self._cache.put(url, data)
         return data
+
+    async def _get(self, url: str) -> bytes:
+        # Streamed, so an oversized (or endless) body is cut off at max_bytes
+        # instead of being read into memory first.
+        async with self._client.stream("GET", url) as response:
+            if response.status_code != 200:
+                raise ReferenceImageFetchError(
+                    reason="bad_status", detail_msg=f"status_{response.status_code}"
+                )
+            chunks, size = [], 0
+            async for chunk in response.aiter_bytes():
+                size += len(chunk)
+                if size > self._max_bytes:
+                    raise ReferenceImageFetchError(
+                        reason="too_large", detail_msg=f"over_{self._max_bytes}_bytes"
+                    )
+                chunks.append(chunk)
+            return b"".join(chunks)
 
     def cache_snapshot(self) -> dict[str, float | int | bool]:
         """Cache saturation for the API's /metrics endpoint."""
